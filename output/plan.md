@@ -1,53 +1,60 @@
-# Plan de Acción: Sistema de Gestión de Inventarios
+# Project Plan
 
-## Objetivo
-Desarrollar e implementar un sistema integral de gestión de inventarios para una empresa de tecnología, con control de números de serie, gestión de garantías, alertas automáticas y API de integración, en un plazo de 12 semanas.
+## Objective
+Crear una API RESTful en Laravel para alimentar un frontend de gestión de empleados, con autenticación, gestión de departamentos y puestos, y control de acceso basado en roles.
 
-## Arquitectura Técnica
+## Architecture
+- **Framework**: Laravel 10+
+- **Autenticación**: Laravel Sanctum (tokens simples)
+- **Estructura**: API RESTful con paginación Limit/Offset
+- **Seguridad**: Control de acceso por roles (admin vs usuario), salary solo accesible por admin
+- **Documentación**: OpenAPI/Swagger
 
-- **Backend**: Node.js + Express con TypeScript
-- **Frontend**: React + Material UI
-- **Base de datos**: PostgreSQL
-- **App móvil**: React Native (Android/iOS)
-- **Despliegue**: Docker + Docker Compose
+## Modules
 
-## Módulos Funcionales
+### 1. Módulo Empleados
+- CRUD completo
+- Campos: id, nombre, email, teléfono, fecha_contratación, puesto, departamento_id, salary, estado
+- Validaciones: email único, campos requeridos, salary positivo
+- Filtros: nombre, departamento, estado, rango de fecha contratación
 
-1. **Gestión de Productos**: CRUD completo, código QR/barras, imágenes, categorías jerárquicas
-2. **Control de Series**: tracking individual de equipos con historial completo
-3. **Gestión de Lotes**: control de fechas de caducidad con alertas automáticas
-4. **Movimientos**: entradas/salidas con validación de stock y serie
-5. **Alertas**: reorder point, productos próximos a vencer, stock negativo
-6. **Reportes**: valuación inventario, rotación por período, productos críticos
-7. **Auditoría**: log completo de operaciones por usuario
-8. **API REST**: endpoints documentados para integración con ERP/contabilidad
-9. **Control de Acceso (RBAC)**: Admin, Almacenista, Auditor, Vendedor
+### 2. Módulo Departamentos
+- CRUD completo
+- Relación uno a muchos con empleados
 
-## Pasos de Implementación
+### 3. Módulo Puestos
+- CRUD completo
+- Relación uno a muchos con empleados
 
-| Fase | Semanas | Entregable |
-|------|---------|------------|
-| 1 | 2 | Setup infraestructura, autenticación, productos |
-| 2 | 2 | Movimientos, validación stock |
-| 3 | 2 | Control series y lotes |
-| 4 | 2 | Reportes y dashboard |
-| 5 | 2 | App móvil para inventario físico |
-| 6 | 2 | API integración, testing |
+### 4. Módulo Historial Laboral
+- Registro de cambios por empleado
 
-## Riesgos
+### 5. Módulo Autenticación y Roles
+- Sanctum para autenticación
+- Sistema de roles (admin/usuario) - implementar con Laravel o Spatie según preferencia del cliente
 
-- Retrasos en desarrollo de app móvil por compatibilidad multiplataforma
-- Integración con sistemas legacy puede requerir ajustes adicionales
-- Capacitación de usuarios puede requerir tiempo adicional al plan
-- Costos variables según complejidad de integraciones
+## Implementation Steps
+1. **Setup**: Crear proyecto Laravel, instalar Sanctum y Spatie (opcional)
+2. **Migraciones**: Crear tablas empleados, departamentos, puestos, historial_laboral, usuarios con roles
+3. **Modelos**: Definir modelos con relaciones
+4. **Controladores**: Crear controladores API con métodos CRUD
+5. **Rutas**: Definir endpoints RESTful con middleware de autenticación
+6. **Políticas**: Implementar políticas de acceso para salary (solo admin)
+7. **Validaciones**: Request classes para validación de datos
+8. **Filtros**: Implementar query scopes para búsquedas
+9. **Documentación**: Generar documentación OpenAPI
+10. **Testing**: Unit tests para endpoints críticos
 
-## Cronograma
+## Risks
+- **Seguridad**: Exposición accidental de salary si no se configura correctamente la política de acceso
+- **Performance**: Consultas sin índices en campos de búsqueda frecuentes
+- **Compatibilidad**: Pagination Limit/Offset puede tener problemas con datos muy grandes
 
-**Duración total**: 12 semanas (3 meses)
+## Timeline
+- **Fase 1** (Setup y Migraciones): 2-3 días
+- **Fase 2** (Modelos y Controladores): 3-4 días
+- **Fase 3** (Autenticación y Roles): 2 días
+- **Fase 4** (Filtros y Documentación): 1-2 días
+- **Fase 5** (Testing): 2 días
 
-**Equipo requerido**: 1 PM, 2 desarrolladores full-stack, 1 QA
-
-**Inversión estimada**:
-- Desarrollo: $18,000 - $24,000 USD
-- Infraestructura cloud: $200-500 USD/mes
-- Mantenimiento anual: 20% del costo de desarrollo
+**Total estimado**: 10-13 días

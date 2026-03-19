@@ -20,10 +20,13 @@ class AgentRuntime:
         #     "done"
         # ]
 
+    # Helpers -----------------------------------------------------------------------------------------------
+
     def is_approved(self, response):
         content = response["content"].upper()
         return "APPROVED" in content
 
+    # Main Runtime Stages ---------------------------------------------------------------------------------
     def run_ideation(self):
         turn = 0
         approved = False
@@ -63,9 +66,9 @@ class AgentRuntime:
     
     def run_planning(self):
         print("\nPlan has been generated. Generating tasks...\n")
-        break
+        self.state["phase"] = "done"
 
-    # Main runtime loop
+    # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):
         
         self.bus.publish({
