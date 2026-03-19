@@ -21,3 +21,7 @@ __pycache__/
 htmlcov/
 .coverage
 .coverage.*
+
+# Generated files
+output/
+output/*
