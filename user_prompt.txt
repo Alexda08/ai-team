@@ -1,5 +1,1 @@
-quiero montar una tienda online moderna con buen rendimiento y que escale, pero no quiero complicarme mucho ni gastar demasiado, que sea facil de mantener y que se vea profesional. tambien me gustaria poder personalizar cosas en el futuro.
-
-no tengo claro si usar shopify, headless o algo mas simple. tampoco se mucho de frontend moderno pero aprendo rapido.
-
-que me recomiendas hacer?
+tarea: crear un script sencillo que lea un archivo txt y muestre su contenido por consola.

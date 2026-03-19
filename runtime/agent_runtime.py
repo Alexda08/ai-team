@@ -3,6 +3,7 @@ from runtime.runtime_helper import RuntimeHelper
 from runtime.message_bus import MessageBus
 from evaluation.score import ScoreSystem
 from evaluation.score_bus import ScoreBus
+import json
 
 class AgentRuntime:
     def __init__(self, agents, max_turns=10):
@@ -71,6 +72,10 @@ class AgentRuntime:
 
     def run_tasking(self):
         print("\nTasking running...\n")
+        tasker = self.agents["Tasker"]
+        response = tasker.generate_tasks(self.state["plan"])
+        # tasks = json.loads(response)
+        print(response)
         self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------

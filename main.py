@@ -1,6 +1,7 @@
 from llm.client import LLMClient
 from agents.base_agent import BaseAgent
 from agents.ThinkerAgent import ThinkerAgent
+from agents.TaskerAgent import TaskerAgent
 from runtime.agent_runtime import AgentRuntime
 from common.utils import Utils
 from pprint import pprint
@@ -28,9 +29,9 @@ def main():
         llm=llm
     )
 
-    tasker = BaseAgent(
+    tasker = TaskerAgent(
         name="Tasker",
-        system_prompt=prompts["critic_prompt"],
+        system_prompt=prompts["tasker_prompt"],
         llm=llm
     )
 
