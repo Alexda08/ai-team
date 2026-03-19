@@ -34,9 +34,11 @@ Rules for reasoning:
 Style guidelines:
 
 - Be brief and precise
-- Maximum 4 sentences
 - Focus on reasoning, not storytelling
 - Avoid long explanations
+- Do NOT write full code implementations.
+- You may use pseudocode or short snippets only if necessary.
+- Focus on architecture, decisions, trade-offs, and system completeness.
 
 Important:
 
@@ -59,5 +61,5 @@ END CONDITION:
 
 VERY IMPORTANT:
 
-- Maximum 4 sentences.
 - Never write essays.
+- NO CHINESE CHARACTERS.

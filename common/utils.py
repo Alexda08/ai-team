@@ -11,7 +11,7 @@ class Utils:
     
     # add try except for file not found
     @staticmethod
-    def load_text(filename: str, path: str = "prompts") -> tuple[bool, str]:
+    def load_text(filename: str, path: str) -> tuple[bool, str]:
         file_path = Path(path) / filename
 
         try:
@@ -19,3 +19,18 @@ class Utils:
             return True, content
         except OSError as e:
             return False, f"No se pudo leer '{file_path}': {e}"
+
+    @staticmethod
+    def load_prompts() -> tuple[bool, dict]:
+        location = Path("./agents/prompts")
+        prompts = {}
+
+        for prompt in location.iterdir():
+            if prompt.is_file():
+                success, content = Utils.load_text(prompt.name, location)
+                if not success:
+                    return False, content
+                
+                prompts[prompt.stem] = content
+        
+        return True, prompts

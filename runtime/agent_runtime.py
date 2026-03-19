@@ -1,9 +1,14 @@
 from common.utils import Utils
+from runtime.runtime_helper import RuntimeHelper
+from runtime.message_bus import MessageBus
+from evaluation.score import ScoreSystem
+from evaluation.score_bus import ScoreBus
 
 class AgentRuntime:
-    def __init__(self, agents, message_bus, max_turns=10):
+    def __init__(self, agents, max_turns=10):
         self.agents = agents
-        self.bus = message_bus
+        self.message_bus = MessageBus()
+        self.score_bus = ScoreBus()
         self.max_turns = max_turns
         self.state = {
             "phase": "ideation",
@@ -12,75 +17,80 @@ class AgentRuntime:
             "completed_tasks": []
         }
 
-        # PHASES = [
         #     "ideation",     # Thinker ↔ Critic
         #     "planning",     # generar plan.md
-        #     "task_gen",     # plan → tasks
+        #     "tasking",     # plan → tasks
         #     "execution",    # tasks → agentes
         #     "done"
-        # ]
-
-    # Helpers -----------------------------------------------------------------------------------------------
-
-    def is_approved(self, response):
-        content = response["content"].upper()
-        return "APPROVED" in content
+        #     "failed",       # Fallo en alguno de los agentes
 
     # Main Runtime Stages ---------------------------------------------------------------------------------
     def run_ideation(self):
+        print("\nIdeation running...\n")
         turn = 0
         approved = False
 
         thinker = self.agents["Thinker"]
         critic = self.agents["Critic"]
         
-        while turn < self.max_turns and not approved:
+        while turn < self.max_turns:
             # THINKER
-            t_resp = thinker.run(self.bus.history())
-            self.bus.publish(t_resp)
+            t_resp = thinker.run(self.message_bus.history())
+            self.message_bus.publish(t_resp)
 
             print("\n--------------------------------------------------")
             print(f"{thinker.name}: {t_resp['content']}")
 
             # CRITIC
-            c_resp = critic.run(self.bus.history())
-            self.bus.publish(c_resp)
+            c_resp = critic.run(self.message_bus.history())
+            self.message_bus.publish(c_resp, {"status": RuntimeHelper.get_status(c_resp), "iteration": turn})
 
             print("\n--------------------------------------------------")
             print(f"{critic.name}: {c_resp['content']}")
             
-            if turn >= 1 and self.is_approved(c_resp):
-                print("\nIdea approved.\n")
-                approved = True
-            turn += 1
+            if approved := RuntimeHelper.is_approved(c_resp):
+                break
+            turn += 1   
         
         if turn >= self.max_turns and not approved:
             print("\nMax turns reached in ideation phase.")
-        if approved:
-            plan = thinker.generate_plan(self.bus.history())
-            Utils.save_text("output/plan.md", plan)
-            self.state["plan"] = plan
-            self.state["phase"] = "planning"
+            self.state["phase"] = "failed"
+            return
 
-            print("Plan saved to output/plan.md")
-    
+        self.state["phase"] = "planning"
+           
     def run_planning(self):
+        print("\nPlanning running...\n")
+        thinker = self.agents["Thinker"]
+        plan = thinker.generate_plan(self.message_bus.history())
+        Utils.save_text("output/plan.md", plan)
+        self.state["plan"] = plan
+
+        self.state["phase"] = "tasking"
         print("\nPlan has been generated. Generating tasks...\n")
+
+    def run_tasking(self):
+        print("\nTasking running...\n")
         self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):
         
-        self.bus.publish({
+        self.message_bus.publish({
             "role": "user",
             "content": user_prompt
         })
 
-        while self.state["phase"] != "done":
+        while self.state["phase"] != "done" and self.state["phase"] != "failed":
             if self.state["phase"] == "ideation":
                 self.run_ideation()
             elif self.state["phase"] == "planning":
                 self.run_planning()
+            elif self.state["phase"] == "tasking":
+                self.run_tasking()
         
-       
+        if self.state["phase"] == "failed":
+            print("\nRuntime failed.\n")
+        elif self.state["phase"] == "done":
+            print("\nRuntime completed.\n")
 

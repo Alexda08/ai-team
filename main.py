@@ -2,48 +2,56 @@ from llm.client import LLMClient
 from agents.base_agent import BaseAgent
 from agents.ThinkerAgent import ThinkerAgent
 from runtime.agent_runtime import AgentRuntime
-from runtime.message_bus import MessageBus
-from prompts.prompt_loader import load_prompt
 from common.utils import Utils
-
+from pprint import pprint
 
 def main():
     # LLM
-    llm = LLMClient(model="minimax-m2.5:cloud")
+    llm = LLMClient(model="minimax-m2.7:cloud")
+
+    # Prompts
+    success, prompts = Utils.load_prompts()
+    if not success:
+        print(prompts)
+        return
 
     # Agents
     thinker = ThinkerAgent(
         name="Thinker",
-        system_prompt=load_prompt("thinker_prompt.txt"),
+        system_prompt=prompts["thinker_prompt"],
         llm=llm
     )
 
     critic = BaseAgent(
         name="Critic",
-        system_prompt=load_prompt("critic_prompt.txt"),
+        system_prompt=prompts["critic_prompt"],
         llm=llm
     )
 
-    # Message Bus
-    bus = MessageBus()
+    tasker = BaseAgent(
+        name="Tasker",
+        system_prompt=prompts["critic_prompt"],
+        llm=llm
+    )
 
     # Runtime
     runtime = AgentRuntime(
         agents={
             "Thinker": thinker,
-            "Critic": critic
-        },
-        message_bus=bus,
-        max_turns=10
+            "Critic": critic,
+            "Tasker": tasker
+        }
+        # max_turns=10
     )
 
     # Prompt inicial
-    load, text = Utils.load_text("user_prompt.txt", "./")
+    success, content = Utils.load_text("user_prompt.txt", "./")
 
-    if load:
-        runtime.run(text)
-    else:
-        print(text)
+    if not success:
+        print(content)
+        return
+
+    runtime.run(content)
 
 if __name__ == "__main__":
     main()

@@ -1,191 +1,164 @@
-# Project Plan: Shopify Draft Order Custom App
+# Project Plan
 
 ## Objective
 
-Desarrollar una aplicación custom para Shopify con backend externo propio que permita a usuarios autorizados generar Draft Orders sin pasar por el checkout estándar, con gestión de productos habilitados, validación de inventario y control de visibilidad por usuario.
+Launch a professional, scalable online store with minimal maintenance burden and budget-controlled costs, capable of future customization as the business grows.
+
+**Target Winner:** Shopify Basic + Premium Theme (validated by weighted scoring: 3.95/5)
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           ARQUITECTURA GENERAL                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│   ┌──────────────────┐      ┌──────────────────┐      ┌───────────┐ │
-│   │  Shopify Store   │      │  Backend Propio  │      │  Shopify  │ │
-│   │   (Frontend)     │◄────►│  (API + DB +     │◄────►│  Admin    │ │
-│   │                  │      │   Auth)          │      │  API      │ │
-│   └────────┬─────────┘      └────────┬─────────┘      └───────────┘ │
-│            │                         │                                  │
-│            │   Theme App            │                                  │
-│            │   Extensions           │                                  │
-│            │                         │                                  │
-│   ┌────────▼─────────────────────────▼──────────────────────────────┐ │
-│   │                    FLUJO DE DATOS                                │ │
-│   │                                                                    │ │
-│   │  Usuario logueado → Session Token → Backend valida →             │ │
-│   │  Consulta permisos → Muestra opción en cart →                    │ │
-│   │  Validación inventario → Crear Draft Order → URL/edición         │ │
-│   └───────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        FRONTEND                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │           Shopify Theme (Premium)                   │   │
+│  │         - Dawn or similar (fast, modern)            │   │
+│  │         - Mobile-first, accessible                 │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     SHOPIFY CORE                            │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ Products │  │  Orders  │  │ Payments │  │  Apps    │   │
+│  │ Catalog  │  │   Flow   │  │ (Stripe) │  │ Plugins  │   │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     INFRASTRUCTURE                          │
+│  - Shopify Managed (zero server maintenance)               │
+│  - CDN Global (Shopify's edge network)                      │
+│  - SSL Included                                            │
+│  - Auto-scaling for traffic peaks                          │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-**Componentes técnicos:**
-
-| Capa | Tecnología |
-|------|-------------|
-| Backend API | Node.js (Express/Fastify) o Python (FastAPI) |
-| Base de datos | PostgreSQL |
-| Autenticación | JWT + Shopify Customer Account API v2 |
-| Integración Shopify | Theme App Extensions |
-| Seguridad | HashiCorp Vault para credenciales |
-| Despliegue | Contenedores Docker |
 
 ---
 
 ## Modules
 
-### Módulo 1: Gestión de Usuarios Autorizados
-
-- Registro de usuarios autorizados en DB propia
-- Sincronización con clientes de Shopify (vía customer_id)
-- Panel admin para gestionar autorización
-- Logs de accesos y acciones
-
-### Módulo 2: Gestión de Productos Habilitados
-
-- Tabla de productos/variantes habilitados
-- API REST para marcar productos desde panel admin
-- Sync con catálogo Shopify (webhooks para cambios)
-- Filtros por producto, variante o colección
-
-### Módulo 3: Integración Cart/Basket (Theme App Extension)
-
-- Cart Bootstrap Extension para injectar UI
-- Lógica de visibilidad según usuario autorizado
-- Botón/acción condicional en el carrito
-- Comunicación AJAX con backend propio
-
-### Módulo 4: Validación de Inventario
-
-- Consulta a Shopify Inventory API antes de crear draft
-- Validación de stock disponible por ubicación
-- Respuesta de error si no hay inventario
-
-### Módulo 5: Creación de Draft Orders
-
-- Endpoint API para generar draft via Shopify Admin API
-- Construcción del payload con line items del cart
-- Retorno de URL de edición del draft
-- Envío de email automático (configurable)
-
-### Módulo 6: Seguridad y Autenticación
-
-- JWT con expiry corto (15 min)
-- Rate limiting en endpoints
-- IP allowlist (opcional)
-- Almacenamiento de credenciales en Vault
-- Scopes mínimos de API: read_products, write_draft_orders, read_inventory, read_locations
+| Module | Component | Purpose |
+|--------|-----------|---------|
+| **Storefront** | Premium Theme | Visual presentation, responsive design |
+| **Catalog** | Shopify Products | Inventory, variants, pricing |
+| **Checkout** | Shopify Checkout | Conversion-optimized, multi-payment |
+| **Payments** | Shopify Payments / Stripe | Cards, local methods, buy-now-pay-later |
+| **Shipping** | Shopify Shipping | Rates, labels, integration carriers |
+| **Marketing** | Shopify Email + Integrations | Campaigns, abandoned cart recovery |
+| **Analytics** | Shopify Analytics + GA4 | Sales, traffic, conversion tracking |
+| **SEO** | Shopify SEO + Schema | Meta tags, structured data, sitemap |
 
 ---
 
 ## Implementation Steps
 
-### Fase 1: Fundación (Semanas 1-2)
+### Phase 1: Foundation (Weeks 1-2)
 
-- [ ] Configurar entorno de desarrollo
-- [ ] Crear cuenta de Partner Shopify y app de desarrollo
-- [ ] Configurar backend (Node.js/Python) con PostgreSQL
-- [ ] Implementar autenticación JWT básica
-- [ ] Configurar Vault para almacenamiento de credenciales Shopify
-- [ ] Registrar app en Shopify y obtener access token
+1. **Create Shopify account** → Basic Plan ($29/month)
+2. **Configure store settings**
+   - Legal pages (terms, privacy, refund policy)
+   - Currency and pricing strategy
+   - Tax settings (based on target market)
+3. **Domain setup** → Connect existing domain or purchase via Shopify
+4. **Select and install premium theme** → Dawn (free) or alternative ($100-300)
 
-### Fase 2: Integración Shopify Core (Semanas 3-4)
+### Phase 2: Catalog Setup (Weeks 2-3)
 
-- [ ] Desarrollar Theme App Extension para cart
-- [ ] Implementar Customer Account API v2 para identificación
-- [ ] Crear flujo de validación de sesión de usuario
-- [ ] Implementar comunicación frontend-backend segura
-- [ ] Testing de integración storefront
+5. **Add products**
+   - Titles, descriptions, high-quality images
+   - Variants (size, color, etc.)
+   - Inventory tracking enabled
+6. **Configure collections** → Organize by category
+7. **Set up shipping zones** → Regions, rates, free shipping thresholds
 
-### Fase 3: Gestión de Datos (Semanas 5-6)
+### Phase 3: Payments & Legal (Week 3)
 
-- [ ] Crear schema de DB para usuarios autorizados
-- [ ] Crear schema de DB para productos habilitados
-- [ ] Implementar webhooks de Shopify para sync de productos
-- [ ] Desarrollar panel admin básico para gestión
-- [ ] Implementar logs y trazabilidad de acciones
+8. **Payment provider setup**
+   - Shopify Payments (if available in region) OR Stripe/PayPal
+   - Test transactions in sandbox mode
+9. **Legal compliance**
+   - GDPR: Cookie consent, data handling
+   - Regional: Tax calculation apps, invoice format
 
-### Fase 4: Lógica de Negocio (Semanas 7-8)
+### Phase 4: Marketing Foundation (Weeks 3-4)
 
-- [ ] Implementar validación de inventario
-- [ ] Desarrollar endpoint de creación de Draft Orders
-- [ ] Configurar manejo de errores y respuestas
-- [ ] Implementar flujo post-draft (URL directa/email)
-- [ ] Pruebas end-to-end del flujo completo
+10. **Email capture** → Install Shopify Email or Klaviyo (free tier)
+11. **Analytics** → Connect Google Analytics 4 + Shopify
+12. **Social links** → Instagram, Facebook, WhatsApp integration
+13. **SEO basic** → Meta titles, descriptions, image alt text
 
-### Fase 5: Seguridad y Hardening (Semanas 9-10)
+### Phase 5: Launch (Week 4-5)
 
-- [ ] Implementar rate limiting
-- [ ] Configurar HTTPS y headers de seguridad
-- [ ] Revisión de auditoría de seguridad
-- [ ] Tests de penetración básicos
-- [ ] Documentación técnica
+14. **QA testing** → Checkout flow, mobile experience, load times
+15. **Soft launch** → Invite beta testers (friends, existing customers)
+16. **Fix issues** → Based on feedback
+17. **Official launch** → Announce on social media, email list
 
-### Fase 6: Despliegue y Entrega (Semanas 11-12)
+### Phase 6: Optimization & Growth (Month 2+)
 
-- [ ] Desplegar backend en producción
-- [ ] Instalar app en tienda Shopify de producción
-- [ ] Configurar variables de entorno producción
-- [ ] Testing de usuario final
-- [ ] Documentación para el cliente
-- [ ] Transferencia y training
+18. **Performance monitoring** → Conversion rates, bounce rates
+19. **Marketing campaigns** → Paid ads, email flows
+20. **Evaluate customization needs** → If Liquid/headless becomes necessary, plan migration
 
 ---
 
 ## Risks
 
-| Riesgo | Probabilidad | Impacto | Mitigación |
-|--------|--------------|---------|------------|
-| Cambios en APIs de Shopify | Media | Alto | Versionar integración, monitorear changelogs |
-| Rate limits de Shopify API | Media | Medio | Implementar caché y colas de procesamiento |
-| Problemas de rendimiento | Baja | Medio | Optimizar queries, implementar caché Redis |
-| Seguridad de credenciales | Alta | Crítico | Usar Vault, rotación de tokens, scopes mínimos |
-| Sync de productos fallido | Media | Medio | Reintentos automáticos, alertas de monitoreo |
-| Usuario no identificado correctamente | Baja | Alto | Múltiples métodos de validación, logs detallados |
-| Inventario desactualizado | Media | Medio | Webhooks en tiempo real, fallback a polling |
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| **Theme customization limitations** | Medium | Medium | Choose theme with built-in customization; plan Liquid learning if deeper changes needed |
+| **App dependency** | Medium | Low | Limit to essential apps; prefer Shopify-native over third-party |
+| **Payment region limitations** | High (if LATAM) | High | Verify payment gateway availability before launch; have backup (PayPal, Mercado Pago) |
+| **Cost creep** | Medium | Medium | Set monthly budget cap; review apps annually |
+| **Scalability ceiling** | Low (for early stage) | Low | Shopify handles millions in sales; migration path exists if needed |
+| **GDPR/Compliance issues** | Medium | High | Consult local legal requirements; use Shopify's built-in compliance tools |
 
 ---
 
 ## Timeline
 
-```
-Semana:   1    2    3    4    5    6    7    8    9   10   11   12
-          │    │    │    │    │    │    │    │    │    │    │    │
-FASE 1    ████████████████
-FASE 2              █████████████████
-FASE 3                          █████████████████
-FASE 4                                    █████████████████
-FASE 5                                              ██████████████
-FASE 6                                                        ████████████████
+| Week | Milestone | Deliverable |
+|------|-----------|-------------|
+| 1 | Account & Setup | Shopify store created, domain connected, theme selected |
+| 2-3 | Catalog Complete | All products added with images, variants, collections |
+| 3 | Payments & Legal | Checkout working, legal pages live |
+| 4 | Marketing Ready | Email capture, analytics, social links active |
+| 5 | **GO LIVE** | Public store launched |
+| 8 | First Review | Analyze metrics, adjust strategy |
 
-Entrega: Semana 12
-```
+**Total Year 1 Cost Estimate:**
 
-**Duración total estimada: 12 semanas**
-
-**Hitos clave:**
-- Semana 4: Integración storefront funcional
-- Semana 8: Flujo completo operativo
-- Semana 12: Entrega en producción
+| Item | Cost |
+|------|------|
+| Shopify Basic ($29/mo × 12) | $348 |
+| Domain (~$15/year) | $15 |
+| Premium Theme (optional) | $100-300 |
+| Essential Apps (free tier) | $0-50 |
+| Marketing budget (Month 1-3) | $100-200 |
+| **Year 1 Total** | **$563-913** |
 
 ---
 
-## Notas Adicionales
+## Adjustment Triggers
 
-- El timeline asume equipo de 2 desarrolladores senior
--scope adicional puede requerir ajustes en timeline
-- Se recomienda fase de mantenimiento post-lanzamiento (horas adicionales)
-- Documentación de API будет entregada junto con el código
+This plan assumes:
+- Mixed physical/digital products
+- Budget $563-913 Year 1
+- General market (not restricted to specific region)
+
+**If your actual situation differs:**
+
+| Change | Plan Adjustment |
+|--------|------------------|
+| Budget <$500 | Use Dawn (free theme) + WooCommerce alternative |
+| 100% Digital products | Shopify + Digital Downloads app |
+| EU market | Add GDPR compliance phase (Week 3) |
+| LATAM market | Add Mercado Pago / local payment integration |
+| B2B focus | Evaluate Shopify Plus or Medusa later |
+| Need total data control | Switch to WooCommerce or Self-hosted |
