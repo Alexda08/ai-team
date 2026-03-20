@@ -143,6 +143,7 @@ class TaskerAgent (BaseAgent):
         issues = self._validate_modularity(tasks_parsed)
 
         if not issues:
+            print("\nNo issues found while refine.")
             return tasks
         
         print("\nIssues found while refine:", issues)

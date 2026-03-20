@@ -4,7 +4,6 @@ from agents.ThinkerAgent import ThinkerAgent
 from agents.TaskerAgent import TaskerAgent
 from runtime.agent_runtime import AgentRuntime
 from common.utils import Utils
-from pprint import pprint
 
 def main():
     # LLM
@@ -34,9 +33,6 @@ def main():
             llm=llm
         )
     }
-    
-    # Runtime
-    runtime = AgentRuntime(agents=init_agents)
 
     # Prompt inicial
     success, content = Utils.load_text("user_prompt.txt", "./")
@@ -45,6 +41,22 @@ def main():
         print(content)
         return
 
+    # Mode selection
+    mode = Utils.select_menu(options = {
+        "ideation": "Full pipeline (Thinker → Tasker → Execution)",
+        "planning": "Start from Planning",
+        "tasking": "Start from Tasking",
+        "execution": "Start from Execution",
+        "none": "Exit",
+    })
+
+    if mode == "none":
+        print("Exiting...")
+        return
+
+    # Runtime
+    runtime = AgentRuntime(agents=init_agents)
+    runtime.state["phase"] = mode
     runtime.run(content)
 
 if __name__ == "__main__":

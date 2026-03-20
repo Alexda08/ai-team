@@ -9,21 +9,14 @@ class AgentRuntime:
     def __init__(self, agents, max_turns=10):
         self.agents = agents
         self.message_bus = MessageBus()
-        self.score_bus = ScoreBus()
         self.max_turns = max_turns
         self.state = {
             "phase": "ideation",
             "plan": None,
             "tasks": [],
-            "completed_tasks": []
+            "completed_tasks": [],
+            "issues": []
         }
-
-        #     "ideation",     # Thinker ↔ Critic
-        #     "planning",     # generar plan.md
-        #     "tasking",     # plan → tasks
-        #     "execution",    # tasks → agentes
-        #     "done"
-        #     "failed",       # Fallo en alguno de los agentes
 
     # Main Runtime Stages ---------------------------------------------------------------------------------
     def run_ideation(self):
@@ -74,9 +67,6 @@ class AgentRuntime:
         print("\nTasking running...\n")
         tasker = self.agents["Tasker"]
         response = tasker.generate_tasks(self.state["plan"])
-
-        Utils.save_text("output/tasks.json", response)
-
         refined_response = tasker.refine(response)
 
         if not Utils.is_valid_json(refined_response):
@@ -84,7 +74,12 @@ class AgentRuntime:
             self.state["phase"] = "failed"
             return
 
-        Utils.save_text("output/refined_tasks.json", refined_response)
+        Utils.save_text("output/tasks.json", refined_response)
+        self.state["tasks"] = refined_response
+        self.state["phase"] = "execution"
+
+    def run_execution(self):
+        print("\nExecution running...\n")
         self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------
@@ -102,6 +97,8 @@ class AgentRuntime:
                 self.run_planning()
             elif self.state["phase"] == "tasking":
                 self.run_tasking()
+            elif self.state["phase"] == "execution":
+                self.run_execution()
         
         if self.state["phase"] == "failed":
             print("\nRuntime failed.\n")

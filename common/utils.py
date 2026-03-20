@@ -1,5 +1,6 @@
-import os, json
+import os, json, questionary
 from pathlib import Path
+from questionary import Choice
 
 class Utils:
     @staticmethod
@@ -47,3 +48,14 @@ class Utils:
             return True
         except (json.JSONDecodeError, TypeError):
             return False
+
+    @staticmethod
+    def select_menu(options={}, title="Select an option"):
+        choice = questionary.select(
+            title,
+            choices=[
+                Choice(value, value=key) for key, value in options.items()
+            ]
+        ).ask()
+
+        return choice
