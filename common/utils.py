@@ -1,4 +1,4 @@
-import os
+import os, json
 from pathlib import Path
 
 class Utils:
@@ -8,6 +8,8 @@ class Utils:
         
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
+
+    
     
     # add try except for file not found
     @staticmethod
@@ -34,3 +36,14 @@ class Utils:
                 prompts[prompt.stem] = content
         
         return True, prompts
+
+    @staticmethod
+    def is_valid_json(data):
+        try:
+            if isinstance(data, str):
+                json.loads(data)
+            else:
+                json.dumps(data)
+            return True
+        except (json.JSONDecodeError, TypeError):
+            return False

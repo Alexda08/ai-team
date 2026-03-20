@@ -1,1 +1,3 @@
-tarea: crear un script sencillo que lea un archivo txt y muestre su contenido por consola.
+tarea: diseñar un sistema sencillo de subida de archivos (imagenes) donde los usuarios puedan subir, listar y eliminar archivos. debe ser facil de mantener, con almacenamiento simple y sin usar servicios externos complejos. no necesito autenticacion por ahora pero quiero que sea facil añadirla en el futuro.
+
+quiero una solucion practica, no sobreingenieria, pero que no se rompa facilmente si crece un poco.

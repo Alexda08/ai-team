@@ -68,14 +68,23 @@ class AgentRuntime:
         self.state["plan"] = plan
 
         self.state["phase"] = "tasking"
-        print("\nPlan has been generated. Generating tasks...\n")
+        print("\nPlan has been generated.\n")
 
     def run_tasking(self):
         print("\nTasking running...\n")
         tasker = self.agents["Tasker"]
         response = tasker.generate_tasks(self.state["plan"])
-        # tasks = json.loads(response)
-        print(response)
+
+        Utils.save_text("output/tasks.json", response)
+
+        refined_response = tasker.refine(response)
+
+        if not Utils.is_valid_json(refined_response):
+            print("\nInvalid response from Tasker.")
+            self.state["phase"] = "failed"
+            return
+
+        Utils.save_text("output/refined_tasks.json", refined_response)
         self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------

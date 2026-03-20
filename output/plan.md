@@ -2,55 +2,113 @@
 
 ## Objective
 
-Crear un script Python sencillo y robusto que lea archivos TXT desde la línea de comandos y muestre su contenido por consola, con manejo de errores apropiado.
+Implementar un sistema de subida, listado y eliminación de imágenes que sea:
+- Simple de mantener y operar
+- Preparado para añadir autenticación futura
+- Con límites técnicos explícitos documentados
+
+**Límites de operación:**
+- ≤5 uploads concurrentes
+- 1 sola instancia
+- ~10,000 archivos máximo
+- 5MB por archivo
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────┐
-│         leer_txt.py             │
-├─────────────────────────────────┤
-│  1. Validación de argumentos     │
-│     (sys.argv)                  │
-│  2. Apertura de archivo          │
-│     (encoding UTF-8)            │
-│  3. Lectura y salida            │
-│     (print)                     │
-│  4. Manejo de excepciones       │
-│     (3 tipos de error)          │
-└─────────────────────────────────┘
+app/
+├── main.py                     # Entry point FastAPI
+├── routes/
+│   └── files.py                # Endpoints REST
+├── services/
+│   └── file_service.py         # Lógica de negocio
+├── models/
+│   └── file.py                 # Esquema de respuesta
+├── db/
+│   └── database.py             # Conexión SQLite + WAL mode
+├── utils/
+│   └── validators.py           # Validación MIME real
+└── storage/uploads/            # Archivos en disco
 ```
+
+---
 
 ## Modules
 
-| Componente | Responsabilidad |
-|------------|-----------------|
-| `main()` | Control de flujo, validación de argumentos, código de salida |
-| `open()` con `with` | Apertura segura con cierre automático |
-| Try/except blocks | Manejo de FileNotFoundError, UnicodeDecodeError, PermissionError |
+| Módulo | Responsabilidad |
+|--------|-----------------|
+| `routes/files.py` | POST, GET, DELETE endpoints |
+| `services/file_service.py` | Upload, list, delete con retry y atomicidad |
+| `db/database.py` | SQLite con WAL, conexión pooling |
+| `utils/validators.py` | Magic bytes + MIME type + sanitización |
+
+---
 
 ## Implementation Steps
 
-1. **Crear archivo `leer_txt.py`** con la estructura del código aprobado
-2. **Probar con archivo existente** → verificar salida correcta
-3. **Probar con archivo inexistente** → verificar mensaje de FileNotFoundError
-4. **Probar con archivo con encoding diferente** → verificar mensaje de UnicodeDecodeError
-5. **Probar sin permisos de lectura** → verificar mensaje de PermissionError
-6. **Documentar uso** en comentarios o README
+1. **Setup proyecto base**
+   - Crear estructura de carpetas
+   - Instalar dependencias: `fastapi`, `uvicorn`, `python-multipart`, `Pillow`
+
+2. **Implementar validación de archivos**
+   - Magic bytes verification (jpeg, png, gif, webp)
+   - Sanitización de nombre de archivo y user_id
+   - Límite 5MB
+
+3. **Implementar base de datos SQLite**
+   - Tabla `files`: id, user_id, name, path, size, uploaded_at
+   - WAL mode para mejor concurrencia
+   - Índices en user_id
+
+4. **Implementar lógica de negocio**
+   - Upload con retry exponencial (3 intentos)
+   - Delete en orden: disco → DB (atomicidad)
+   - List con paginación (default 50)
+
+5. **Implementar endpoints**
+   - `POST /files` - Upload con validación
+   - `GET /files` - List con ?page, ?limit
+   - `GET /files/{id}` - Descargar archivo
+   - `DELETE /files/{id}` - Eliminar archivo
+
+6. **Documentar BUG CONOCIDO**
+   - X-User-ID header permite acceso a archivos ajenos
+   - NO es "preparado para auth" - es exploit activo
+
+---
 
 ## Risks
 
-| Riesgo | Probabilidad | Mitigación |
-|--------|--------------|------------|
-| Archivos muy grandes (memoria) | Baja | Aceptado para caso "sencillo" |
-| Encoding no UTF-8 | Media | Mensaje de error claro ya implementado |
-| Argumentos faltantes | Media | Validación en `main()` con mensaje de uso |
+| Riesgo | Impacto | Mitigación |
+|--------|---------|------------|
+| Concurrencia >5 uploads | Degradación rendimiento | Documentar límite, escalar a PostgreSQL si se excede |
+| Disco lleno | Upload falla | Check espacio antes de escribir |
+| Auth exploit activo | Usuario ve/borra archivos ajenos | Documentado como bug conocido |
+| SQLite en multi-instancia | Archivos inconsistentes | Límite a 1 instancia por ahora |
+
+---
 
 ## Timeline
 
-| Paso | Tiempo estimado |
-|------|-----------------|
-| Creación del script | 5 min |
-| Pruebas (4 escenarios) | 10 min |
-| Documentación | 5 min |
-| **Total** | **20 min** |
+| Fase | Descripción | Estimación |
+|------|-------------|------------|
+| 1 | Setup + validación | 1-2 horas |
+| 2 | SQLite + CRUD | 2-3 horas |
+| 3 | Endpoints + testing | 2 horas |
+| 4 | Documentación + deploy | 1 hora |
+| **Total** | | **6-8 horas** |
+
+---
+
+## Known Bug (MUST READ)
+
+```python
+# ⚠️ BUG CONOCIDO - EXPLOIT ACTIVO
+# Sin autenticación real, cualquier usuario puede:
+# - Cambiar header X-User-ID para ver archivos de otros
+# - Borrar archivos de usuarios arbitrarios
+# Esto NO es una "limitación temporal" - es un exploit de seguridad
+# Para producción: implementar JWT/session y remover el fallback
+```

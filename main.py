@@ -17,33 +17,26 @@ def main():
         return
 
     # Agents
-    thinker = ThinkerAgent(
-        name="Thinker",
-        system_prompt=prompts["thinker_prompt"],
-        llm=llm
-    )
-
-    critic = BaseAgent(
-        name="Critic",
-        system_prompt=prompts["critic_prompt"],
-        llm=llm
-    )
-
-    tasker = TaskerAgent(
-        name="Tasker",
-        system_prompt=prompts["tasker_prompt"],
-        llm=llm
-    )
-
+    init_agents = {
+        "Thinker": ThinkerAgent(
+            name="Thinker",
+            system_prompt=prompts["thinker_prompt"],
+            llm=llm
+        ),
+        "Critic":BaseAgent(
+            name="Critic",
+            system_prompt=prompts["critic_prompt"],
+            llm=llm
+        ),
+       "Tasker":TaskerAgent(
+            name="Tasker",
+            system_prompt=prompts["tasker_prompt"],
+            llm=llm
+        )
+    }
+    
     # Runtime
-    runtime = AgentRuntime(
-        agents={
-            "Thinker": thinker,
-            "Critic": critic,
-            "Tasker": tasker
-        }
-        # max_turns=10
-    )
+    runtime = AgentRuntime(agents=init_agents)
 
     # Prompt inicial
     success, content = Utils.load_text("user_prompt.txt", "./")
