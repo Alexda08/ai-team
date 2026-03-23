@@ -1,15 +1,56 @@
 from agents.base_agent import BaseAgent
 import re, json
 
+TASK_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "type": {
+                "type": "string",
+                "enum": ["frontend", "backend", "infra", "integration", "general"]
+            },
+            "model": {
+                "type": "string",
+                "enum": ["light", "medium", "heavy"]
+            },
+            "dependencies": {
+                "type": "array",
+                "items": {"type": "integer"}
+            }
+        },
+        "required": ["id", "title", "description", "type", "model", "dependencies"]
+    }
+}
+
 class TaskerAgent (BaseAgent):
 
     def __init__(self, name, system_prompt, llm):
         super().__init__(name, system_prompt, llm)
 
     def _is_task_too_big(self, task):
+        title = task["title"].lower()
         description = task["description"].lower()
-        keywords = [" and ", " then ", " after ", " before "]
-        return any(k in description for k in keywords)
+
+        title_patterns = [" and create ", " and implement ", " and configure ", " and set up ", " and add ", " then "]
+        if any(p in title for p in title_patterns):
+            return True
+
+        if self._count_actions(description) > 2:  # antes era > 1
+            return True
+
+        if len(description) > 400:
+            return True
+
+        # Múltiples endpoints en una tarea
+        endpoints = re.findall(r'(GET|POST|PUT|DELETE|PATCH)\s+/', task["description"])
+        if len(endpoints) > 1:
+            return True
+
+        return False
 
     def _count_actions(self, description):
         verbs = ["create", "validate", "save", "insert", "delete", "update", "generate"]
@@ -17,46 +58,79 @@ class TaskerAgent (BaseAgent):
 
     def _validate_modularity(self, tasks):
         issues = []
+        seen = set()
 
         for task in tasks:
-            if self._is_task_too_big(task):
-                issues.append((task["id"], "too_many_steps"))
+            task_id = task["id"]
+            if task_id in seen:
+                continue
 
-            if self._count_actions(task["description"]) > 1:
-                issues.append((task["id"], "multiple_actions"))
+            if self._is_task_too_big(task):
+                issues.append((task_id, "too_many_steps"))
+                seen.add(task_id)
 
         return issues
 
+
     def _call_refine(self, tasks, issues):
+        problem_ids = {issue[0] for issue in issues}
+        problem_tasks = [t for t in tasks if t["id"] in problem_ids]
+        ok_tasks = [t for t in tasks if t["id"] not in problem_ids]
+
         print("\nIssues found while refine:", issues)
+        print("Splitting tasks:", [t["id"] for t in problem_tasks])
 
         prompt = f"""
-            You are given a list of tasks.
+            You are given a list of tasks that are too large or contain multiple responsibilities.
 
-            Some tasks are too large or contain multiple responsibilities.
+            YOUR ONLY JOB: Split each task into 2 or more smaller atomic tasks.
 
-            current tasks:
-            {tasks}
+            TASKS TO SPLIT:
+            {problem_tasks}
             ---
 
-            ISSUES list:
-            {issues}
-            ---
-
-            Your job:
-
-            - Split problematic tasks into smaller tasks
-            - Preserve dependencies
-            - Do NOT modify correct tasks
-            - DO NOT modify tasks that are not in the issues list
-
-            Return full updated JSON.
+            RULES:
+            - Each output task must have a SINGLE responsibility
+            - Preserve dependencies from the original task
+            - Do NOT include tasks that are not in the input list
+            - Return ONLY a valid JSON array of the new split tasks
+            - Do NOT wrap in markdown
         """
 
-        return self.llm.generate(
+        raw = self.llm.generate(
             system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            json_schema=TASK_SCHEMA
         )
+
+        new_tasks = json.loads(raw)
+
+        # Reasignar IDs a las nuevas tareas
+        max_id = max(t["id"] for t in tasks)
+        for i, t in enumerate(new_tasks):
+            t["id"] = max_id + i + 1
+
+        # Construir mapping: old_problem_id → lista de new_ids que heredan sus deps
+        # Agrupamos las nuevas tareas por sus dependencias originales
+        # La clave: las nuevas tareas heredan las deps de la tarea original
+        # así que cualquier referencia a problem_id debe apuntar a TODAS las nuevas
+        new_ids = [t["id"] for t in new_tasks]
+
+        # Actualizar dependencias en ok_tasks
+        for task in ok_tasks:
+            new_deps = []
+            changed = False
+            for dep in task["dependencies"]:
+                if dep in problem_ids:
+                    # Reemplazar con todos los nuevos IDs
+                    new_deps.extend(new_ids)
+                    changed = True
+                else:
+                    new_deps.append(dep)
+            if changed:
+                task["dependencies"] = list(set(new_deps))
+
+        return ok_tasks + new_tasks
 
     def generate_tasks(self, plan):
         prompt = f"""
@@ -123,6 +197,7 @@ class TaskerAgent (BaseAgent):
 
             GOOD:
             "Implement DiskStorage.save() that stores files in /uploads/{{year}}/{{month}}/{{uuid}}.{{ext}} and returns the relative path"
+
             ---
 
             DEPENDENCIES:
@@ -133,11 +208,36 @@ class TaskerAgent (BaseAgent):
 
             ---
 
+            TYPE ASSIGNMENT:
+
+            Assign the most accurate type based on what the task actually does:
+
+            - "backend" → Python logic, database queries, API endpoints, services, repositories, schemas
+            - "infra" → Docker, requirements.txt, alembic configuration, project directory structure, CI/CD, environment setup
+            - "integration" → connects two systems (cache + DB, email + service, background jobs)
+            - "general" → anything that doesn't clearly fit the above
+            - "frontend" → UI components, CSS, client-side JS (unlikely in backend projects)
+
+            IMPORTANT: Do NOT default everything to "backend". Infra and integration tasks must be correctly typed.
+
+            ---
+
             MODEL ASSIGNMENT:
 
-            - light → simple setup, config, small functions
-            - medium → logic, DB, validation
-            - heavy → only if truly unavoidable (try to avoid)
+            Assign complexity honestly based on what the task requires to implement:
+
+            - "light" → config files, simple schemas, basic utility functions, directory creation, small CRUD helpers
+            - "medium" → business logic, DB queries with filters, API endpoints, validation logic, pagination
+            - "heavy" → complex systems that require deep reasoning:
+                - Authentication with token rotation and reuse detection
+                - Cache systems with versioned invalidation
+                - Multi-step atomic transactions
+                - Permission and RBAC systems
+                - Background job orchestration
+                - Soft-delete with cascade operations
+                - Repository methods with window functions
+
+            IMPORTANT: Use "heavy" whenever a task requires designing non-trivial logic, not just writing boilerplate.
 
             ---
 
@@ -157,14 +257,18 @@ class TaskerAgent (BaseAgent):
             - Check that no task contains multiple responsibilities
             - Check that each task has a clear output
             - Check that tasks are small enough for a single execution
-            - If not, FIX them
+            - Check that types are correctly assigned (not everything is "backend")
+            - Check that heavy tasks are properly identified
+            - If any of the above fails, FIX it before returning
         """
 
         return self.llm.generate(
             system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            json_schema=TASK_SCHEMA
         )
     
+    # actually this isn't used
     def generate_phases(self, plan):
         prompt = f"""
             INPUT:
@@ -276,22 +380,24 @@ class TaskerAgent (BaseAgent):
         )
 
 
-    def refine(self, tasks, max_attempts = 3):
+    def refine(self, tasks, max_attempts=5):
         try:
             tasks_parsed = json.loads(tasks)
             issues = self._validate_modularity(tasks_parsed)
             attempts = 0
 
             while issues and attempts < max_attempts:
-                tasks_parsed = json.loads(self._call_refine(tasks_parsed, issues))
+                tasks_parsed = self._call_refine(tasks_parsed, issues)
                 issues = self._validate_modularity(tasks_parsed)
+                print(f"Phase {attempts} of refine.")
                 attempts += 1
 
             if attempts >= max_attempts and issues:
                 print("\nMax attempts reached while refine.")
             else:
                 print("\nNo more issues found while refine.")
-            
+
             return tasks_parsed
         except json.JSONDecodeError:
-            return "Invalid JSON in refine"
+            print("Invalid JSON in refine")
+            return []

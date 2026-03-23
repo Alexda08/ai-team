@@ -2,12 +2,14 @@ from llm.client import LLMClient
 from agents.base_agent import BaseAgent
 from agents.ThinkerAgent import ThinkerAgent
 from agents.TaskerAgent import TaskerAgent
+from agents.ExecutorAgent import ExecutorAgent
+from agents.CoderAgent import CoderAgent
 from runtime.agent_runtime import AgentRuntime
 from common.utils import Utils
 
 def main():
     # LLM
-    llm = LLMClient(model="minimax-m2.7:cloud")
+    llm = LLMClient(model="minimax-m2.7:cloud", provider="ollama")
 
     # Prompts
     success, prompts = Utils.load_prompts()
@@ -27,15 +29,20 @@ def main():
             system_prompt=prompts["critic_prompt"],
             llm=llm
         ),
-       "Tasker":TaskerAgent(
+        "Tasker":TaskerAgent(
             name="Tasker",
             system_prompt=prompts["tasker_prompt"],
-            llm=llm
+            llm=LLMClient(model="qwen3-coder-next:cloud", provider="ollama")
         ),
-       "Executor":BaseAgent(
+        "Executor":ExecutorAgent(
             name="Executor",
             system_prompt=prompts["executor_prompt"],
             llm=llm
+        ),
+        "Coder":CoderAgent(
+            name="Coder",
+            system_prompt=prompts["coder_prompt"],
+            llm=LLMClient(model="qwen3-coder-next:cloud", provider="ollama")
         )
     }
 

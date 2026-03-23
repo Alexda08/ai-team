@@ -1,14 +1,13 @@
 from common.utils import Utils
 from runtime.runtime_helper import RuntimeHelper
 from runtime.message_bus import MessageBus
-from evaluation.score import ScoreSystem
-from evaluation.score_bus import ScoreBus
 import json
 
 class AgentRuntime:
     def __init__(self, agents, max_turns=10):
         self.agents = agents
         self.message_bus = MessageBus()
+        self.workspace_context_bus = MessageBus()
         self.max_turns = max_turns
         self.state = {
             "phase": "ideation",
@@ -52,7 +51,7 @@ class AgentRuntime:
             return
 
         self.state["phase"] = "planning"
-           
+
     def run_planning(self):
         Utils.console_print("\nPlanning running...\n", "magenta", bold=True)
         thinker = self.agents["Thinker"]
@@ -67,28 +66,29 @@ class AgentRuntime:
         Utils.console_print("\nTasking running...\n", "red", bold=True)
         tasker = self.agents["Tasker"]
 
-        response = tasker.generate_phases(self.state["plan"])
-        print(response)
+        response = tasker.generate_tasks(self.state["plan"])
+        refined_response = tasker.refine(response)
 
-        # response = tasker.generate_tasks(self.state["plan"])
-        # refined_response = tasker.refine(response)
-
-        # if not Utils.is_valid_json(refined_response):
-        #     print("\nInvalid response from refined Tasker.")
-        #     self.state["phase"] = "failed"
-        #     return
-
-        # Utils.save_text("output/tasks.json", json.dumps(refined_response, indent=2))
-        # self.state["tasks"] = refined_response
+        Utils.save_text("output/tasks.json", json.dumps(refined_response, indent=2))
+        self.state["tasks"] = refined_response
         self.state["phase"] = "execution"
 
     def run_execution(self):
         Utils.console_print("\nExecution running...\n", "yellow", bold=True)
+        executor = self.agents["Executor"]
+        coder = self.agents["Coder"]
+
+        for task in self.state["tasks"]:
+            result = executor.run_task(task, coder, self.workspace_context_bus, self.state["completed_tasks"])
+
+            if result["success"]:
+                self.state["completed_tasks"].append(result["task_id"])
+                self.workspace_context_bus.publish(result["summary"])
+
         self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):
-
         self.message_bus.publish({
             "role": "user",
             "content": user_prompt
