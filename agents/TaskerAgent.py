@@ -27,6 +27,37 @@ class TaskerAgent (BaseAgent):
 
         return issues
 
+    def _call_refine(self, tasks, issues):
+        print("\nIssues found while refine:", issues)
+
+        prompt = f"""
+            You are given a list of tasks.
+
+            Some tasks are too large or contain multiple responsibilities.
+
+            current tasks:
+            {tasks}
+            ---
+
+            ISSUES list:
+            {issues}
+            ---
+
+            Your job:
+
+            - Split problematic tasks into smaller tasks
+            - Preserve dependencies
+            - Do NOT modify correct tasks
+            - DO NOT modify tasks that are not in the issues list
+
+            Return full updated JSON.
+        """
+
+        return self.llm.generate(
+            system=self.system_prompt,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
     def generate_tasks(self, plan):
         prompt = f"""
             INPUT:
@@ -133,40 +164,134 @@ class TaskerAgent (BaseAgent):
             system=self.system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
-
-    def refine(self, tasks):
-        try:
-            tasks_parsed = json.loads(tasks)
-        except json.JSONDecodeError:
-            return "Invalid JSON in refine"
-
-        issues = self._validate_modularity(tasks_parsed)
-
-        if not issues:
-            print("\nNo issues found while refine.")
-            return tasks
-        
-        print("\nIssues found while refine:", issues)
-
+    
+    def generate_phases(self, plan):
         prompt = f"""
-            You are given a list of tasks.
+            INPUT:
 
-            Some tasks are too large or contain multiple responsibilities.
+            You are given a validated ACTION PLAN.
 
-            current tasks:
-            {tasks}
+            Your task is NOT to create tasks.
+
+            Your task is to organize the plan into EXECUTION PHASES based on dependencies.
+
             ---
-            Your job:
 
-            - Split problematic tasks into smaller tasks
-            - Preserve dependencies
-            - Do NOT modify correct tasks
+            ACTION PLAN:
 
-            Return full updated JSON.
+            {plan}
+
+            ---
+
+            GOAL:
+
+            Identify a sequence of phases that represent the correct execution order of the system.
+
+            Each phase must group work that can be executed at the same stage of the system.
+
+            ---
+
+            CORE RULES:
+
+            - Phases MUST be ordered by dependency
+            - A phase can ONLY depend on previous phases
+            - NO phase can depend on a future phase
+            - Each phase must be independently executable once its dependencies are completed
+
+            ---
+
+            IMPORTANT:
+
+            Phases are NOT categories like "frontend", "backend", "database"
+
+            Phases MUST represent dependency layers such as:
+
+            - infrastructure
+            - database schema
+            - core entities
+            - business logic
+            - API layer
+            - AI / advanced systems
+
+            ---
+
+            PHASE DESIGN RULES:
+
+            - Each phase must have a clear purpose
+            - Each phase must represent a logical step in system construction
+            - Avoid too many small phases
+            - Avoid mixing unrelated concerns in the same phase
+            - Prefer grouping by dependency, not by technology
+
+            ---
+            PHASE DEFINITION RULE:
+            - A phase MUST represent a dependency layer, NOT a feature group.
+            - If a phase contains multiple independent responsibilities, it MUST be split.
+            - A phase must be the MINIMUM set of work required before the next phase can start.
+            ---
+
+            OUTPUT STRUCTURE:
+
+            Return ONLY valid JSON.
+
+            Do NOT include explanations.
+
+            Format:
+
+            {{
+                "phases": [
+                    {{
+                    "id": integer,
+                    "name": string,
+                    "description": string,
+                    "dependencies": [phase_ids]
+                    }}
+                ]
+            }}
+
+            ---
+
+            VALIDATION (MANDATORY):
+
+            Before returning:
+
+            - Ensure phases are in correct execution order
+            - Ensure no circular dependencies
+            - Ensure each phase only depends on previous phases
+            - Ensure phases reflect real build order (not arbitrary grouping)
+
+            ---
+
+            CRITICAL:
+
+            - Do NOT generate tasks
+            - Do NOT include implementation details
+            - Do NOT explain anything
+            - Output ONLY JSON
         """
 
         return self.llm.generate(
             system=self.system_prompt,
             messages=[{"role": "user", "content": prompt}]
-        )    
-        
+        )
+
+
+    def refine(self, tasks, max_attempts = 3):
+        try:
+            tasks_parsed = json.loads(tasks)
+            issues = self._validate_modularity(tasks_parsed)
+            attempts = 0
+
+            while issues and attempts < max_attempts:
+                tasks_parsed = json.loads(self._call_refine(tasks_parsed, issues))
+                issues = self._validate_modularity(tasks_parsed)
+                attempts += 1
+
+            if attempts >= max_attempts and issues:
+                print("\nMax attempts reached while refine.")
+            else:
+                print("\nNo more issues found while refine.")
+            
+            return tasks_parsed
+        except json.JSONDecodeError:
+            return "Invalid JSON in refine"

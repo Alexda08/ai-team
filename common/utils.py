@@ -1,18 +1,20 @@
 import os, json, questionary
 from pathlib import Path
 from questionary import Choice
+from rich.console import Console
 
 class Utils:
     @staticmethod
     def save_text(path, content):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+                return True, "success"
+        except Exception as e:
+            return False, f"No se pudo escribir '{path}': {e}"
 
-    
-    
-    # add try except for file not found
     @staticmethod
     def load_text(filename: str, path: str) -> tuple[bool, str]:
         file_path = Path(path) / filename
@@ -59,3 +61,16 @@ class Utils:
         ).ask()
 
         return choice
+
+    @staticmethod
+    def console_print(text, color="white", bold=False, prefix=None):
+        console = Console()
+        style = color
+
+        if bold:
+            style = f"bold {color}"
+
+        if prefix:
+            text = f"{prefix} {text}"
+
+        console.print(text, style=style)

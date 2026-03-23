@@ -14,6 +14,17 @@ class ThinkerAgent (BaseAgent):
             Conversation:
             {history}
 
+            IMPORTANT:
+            - The plan MUST be ordered by dependencies.
+            - Each step MUST only depend on previous steps.
+            - DO NOT include steps that require something not yet built.
+            - If a step depends on another, it MUST appear AFTER it.
+
+            Before finalizing, validate:
+            - No circular dependencies
+            - No missing prerequisites
+            - Logical execution order.
+
             Output format (Markdown):
 
             # Project Plan
@@ -25,6 +36,16 @@ class ThinkerAgent (BaseAgent):
             ## Modules
 
             ## Implementation Steps
+
+            For each step include:
+            - Step number
+            - Title
+            - Description
+            - Dependencies (list of previous step numbers)
+
+            Steps MUST be strictly ordered so that:
+            - No step depends on a future step
+            - The plan could be executed sequentially without blocking
 
             ## Risks
 

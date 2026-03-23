@@ -12,15 +12,15 @@ class AgentRuntime:
         self.max_turns = max_turns
         self.state = {
             "phase": "ideation",
-            "plan": None,
-            "tasks": [],
+            "plan": RuntimeHelper.get_plan(),
+            "tasks": RuntimeHelper.get_tasks(),
             "completed_tasks": [],
             "issues": []
         }
 
     # Main Runtime Stages ---------------------------------------------------------------------------------
     def run_ideation(self):
-        print("\nIdeation running...\n")
+        Utils.console_print("\nIdeation running...\n", "cyan", bold=True)
         turn = 0
         approved = False
 
@@ -54,7 +54,7 @@ class AgentRuntime:
         self.state["phase"] = "planning"
            
     def run_planning(self):
-        print("\nPlanning running...\n")
+        Utils.console_print("\nPlanning running...\n", "magenta", bold=True)
         thinker = self.agents["Thinker"]
         plan = thinker.generate_plan(self.message_bus.history())
         Utils.save_text("output/plan.md", plan)
@@ -64,27 +64,31 @@ class AgentRuntime:
         print("\nPlan has been generated.\n")
 
     def run_tasking(self):
-        print("\nTasking running...\n")
+        Utils.console_print("\nTasking running...\n", "red", bold=True)
         tasker = self.agents["Tasker"]
-        response = tasker.generate_tasks(self.state["plan"])
-        refined_response = tasker.refine(response)
 
-        if not Utils.is_valid_json(refined_response):
-            print("\nInvalid response from Tasker.")
-            self.state["phase"] = "failed"
-            return
+        response = tasker.generate_phases(self.state["plan"])
+        print(response)
 
-        Utils.save_text("output/tasks.json", refined_response)
-        self.state["tasks"] = refined_response
+        # response = tasker.generate_tasks(self.state["plan"])
+        # refined_response = tasker.refine(response)
+
+        # if not Utils.is_valid_json(refined_response):
+        #     print("\nInvalid response from refined Tasker.")
+        #     self.state["phase"] = "failed"
+        #     return
+
+        # Utils.save_text("output/tasks.json", json.dumps(refined_response, indent=2))
+        # self.state["tasks"] = refined_response
         self.state["phase"] = "execution"
 
     def run_execution(self):
-        print("\nExecution running...\n")
+        Utils.console_print("\nExecution running...\n", "yellow", bold=True)
         self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):
-        
+
         self.message_bus.publish({
             "role": "user",
             "content": user_prompt

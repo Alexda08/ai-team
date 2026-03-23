@@ -1,1 +1,1 @@
-quiero crear un script para usar por consola en python que diga Hola mundo! 
+necessito montar un front en react para una app de gestion de proyectos, gestion de tareas, gestion de documentacion, y gestion de conocimiento, gestion de usuarios, gestion de roles, gestion de permisos, y gestion de feedback. Tiene que ser api ready, el backend ya lo tengo.

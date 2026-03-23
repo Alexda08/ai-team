@@ -31,6 +31,11 @@ def main():
             name="Tasker",
             system_prompt=prompts["tasker_prompt"],
             llm=llm
+        ),
+       "Executor":BaseAgent(
+            name="Executor",
+            system_prompt=prompts["executor_prompt"],
+            llm=llm
         )
     }
 
@@ -40,6 +45,8 @@ def main():
     if not success:
         print(content)
         return
+
+    Utils.console_print("Welcome to the AI Dev Team!\n", "White", bold=True)
 
     # Mode selection
     mode = Utils.select_menu(options = {
