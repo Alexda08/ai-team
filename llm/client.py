@@ -1,4 +1,4 @@
-import requests, os
+import requests, os, json, traceback
 
 PROVIDERS = {
     "ollama": {
@@ -33,8 +33,28 @@ class LLMClient:
                 return self._call_anthropic(system, messages)
             elif self.provider == "openai":
                 return self._call_openai(system, messages)
+        except requests.exceptions.HTTPError as e:
+            print(f"[LLMClient] HTTP error calling {self.provider}")
+            print(f"Type: {type(e).__name__}")
+
+            if e.response is not None:
+                print(f"Status code: {e.response.status_code}")
+                print(f"Response body: {_short(e.response.text, 3000)}")
+
+            print(f"System: {_short(system)}")
+            print("Messages summary:")
+            for i, m in enumerate(messages):
+                print(f"  [{i}] role={m.get('role')} content={_short(m.get('content'), 500)}")
+
+            print("Traceback:")
+            traceback.print_exc()
+            raise
+
         except Exception as e:
             print(f"[LLMClient] Error calling {self.provider}: {e}")
+            print(f"Type: {type(e).__name__}")
+            print("Traceback:")
+            traceback.print_exc()
             raise
 
     def _sanitize_messages(self, messages: list) -> list:

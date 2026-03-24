@@ -1,0 +1,22 @@
+--- v1
+- Acabar pipeline de main runtime
+- Fix execution
+- Fix CoderAgent
+- Fix workspace situation
+- Implement ValidatorAgent
+
+--- v2
+- Fragment plan_tasks
+- Loop plan_tasks in code_task
+- Implement skills to agents
+- Implement asking questions to user in ideation in order to get an more accurate plan
+
+-- v3
+- Implement EvaluationAgent and hole sistem in a parallel thread while agent_runtime
+- Implement SystemAgent:
+    (throgh main pipeline if a Agent fails if retrying it can work again, they will asks why it failed to the SystemAgent,
+    SystemAgent will give a a explanation based on the current system and a way to fix it, and the Agent will be able to retry it.
+    If i cant be help, the SystemAgent will stop the flow and asks the user to fix it.)
+
+-- v4
+- Integrate claude code, open code, etc. In the code phase, the code will be generated throw this tools.

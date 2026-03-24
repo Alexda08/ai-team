@@ -84,8 +84,11 @@ class AgentRuntime:
             if result["success"]:
                 self.state["completed_tasks"].append(result["task_id"])
                 self.workspace_context_bus.publish(result["summary"])
+            else:
+                self.state["phase"] = "failed"
+                break
+        self.state["phase"] = "failed"
 
-        self.state["phase"] = "done"
 
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):

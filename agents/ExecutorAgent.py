@@ -14,8 +14,8 @@ class ExecutorAgent (BaseAgent):
         print(f"Executing task {task['id']}: {task['title']}")
         action_plan = coder.plan_task(task, workspace_context_bus)
         res_coder = coder.code_task(action_plan, WORKSPACE_PATH)
-
-        print(json.dumps(res_coder, indent=2))
+        
+        print("action_plan", action_plan)
         
         return {
             "task_id": task["id"],

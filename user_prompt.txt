@@ -1,1 +1,9 @@
-quiero hacer un script de consola en python que diga Hola mundo!
+I want a full high-fashion editorial app. Here's how it works:
+
+The 6-step workflow:
+Garments — drag & drop multiple clothing images; they're stored as reference images sent to the API
+Model — upload a model photo; click "Describe with AI" and Claude vision analyzes it and writes a detailed casting-style physical description automatically
+Location — same flow — upload a reference and Claude describes the environment for you
+Camera — visual selector grid for shot angle, plus dropdowns for lens, film style, aperture, and framing
+Shot Details — lighting, color grade, mood, pose direction, style keywords (tags), and free-form art direction notes
+Generate — assembles everything into a structured prompt, previews it, then fires it at the Nano Banana API
