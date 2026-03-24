@@ -18,6 +18,13 @@ def main():
         return
 
     # Agents
+    model_map = {
+        "light": LLMClient(model="minimax-m2.7:cloud", provider="ollama"),
+        "medium": LLMClient(model="qwen3.5:cloud", provider="ollama"),
+        "heavy": LLMClient(model="qwen3-coder-next:cloud", provider="ollama"),
+        "ultra": LLMClient(model="qwen3-coder:480b-cloud", provider="ollama"),
+    }
+
     init_agents = {
         "Thinker": ThinkerAgent(
             name="Thinker",
@@ -32,17 +39,15 @@ def main():
         "Tasker":TaskerAgent(
             name="Tasker",
             system_prompt=prompts["tasker_prompt"],
-            llm=LLMClient(model="qwen3-coder-next:cloud", provider="ollama")
-        ),
-        "Executor":ExecutorAgent(
-            name="Executor",
-            system_prompt=prompts["executor_prompt"],
             llm=llm
         ),
-        "Coder":CoderAgent(
-            name="Coder",
-            system_prompt=prompts["coder_prompt"],
-            llm=LLMClient(model="qwen3-coder-next:cloud", provider="ollama")
+        "Executor": ExecutorAgent(
+            name="Executor",
+            system_prompt=prompts["executor_prompt"],
+            llm=llm,
+            model_map=model_map,
+            coder_prompt=prompts["coder_prompt"],
+            validator_prompt=prompts["validator_prompt"]
         )
     }
 

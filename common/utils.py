@@ -74,3 +74,13 @@ class Utils:
             text = f"{prefix} {text}"
 
         console.print(text, style=style)
+
+    @staticmethod
+    def clean_json(raw):
+        """Strip markdown code fences from LLM responses."""
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned.rsplit("```", 1)[0]
+        return cleaned.strip()

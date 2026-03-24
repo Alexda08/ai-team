@@ -1,6 +1,7 @@
 import json, platform, os
 from agents.base_agent import BaseAgent
-from common.tools import read_file, write_file, list_files, delete_file, run_command
+from common.tools import read_file, write_file, list_files, delete_file, run_command, replace_in_file, append_file
+from common.utils import Utils
 
 OS_INFO = platform.system()
 CODE_TASK_SCHEMA = {
@@ -14,10 +15,12 @@ CODE_TASK_SCHEMA = {
                 "properties": {
                     "tool": {
                         "type": "string",
-                        "enum": ["write_file", "read_file", "list_files", "delete_file", "run_command"]
+                        "enum": ["write_file", "read_file", "list_files", "delete_file", "run_command", "replace_in_file", "append_file"]
                     },
                     "path": {"type": "string"},
                     "content": {"type": "string"},
+                    "old_str": {"type": "string"},
+                    "new_str": {"type": "string"},
                     "command": {"type": "string"}
                 },
                 "required": ["tool"]
@@ -33,98 +36,89 @@ class CoderAgent(BaseAgent):
     def __init__(self, name, system_prompt, llm):
         super().__init__(name, system_prompt, llm)
 
-    def plan_task(self, task, workspace_context_bus):
-        context_block = ""
-        
-        if workspace_context_bus:
+    def plan_task(self, task, workspace_context_bus, retry_feedback=None):
+        context_block = "WORKSPACE: Empty — no files exist yet."
+
+        if workspace_context_bus and workspace_context_bus.history():
             summaries = "\n".join(f"- {s}" for s in workspace_context_bus.history())
-            context_block = f"""
-                WORKSPACE CONTEXT (already implemented — do NOT duplicate):
-                {summaries}
-                ---
-            """
+            context_block = f"WORKSPACE (already implemented — do NOT duplicate):\n{summaries}"
+
+        feedback_block = ""
+        if retry_feedback:
+            feedback_block = f"\n\nPREVIOUS ATTEMPT FAILED:\n{retry_feedback}\nYou MUST fix this issue in your next attempt."
 
         prompt = f"""
-            You are a coding agent responsible for implementing exactly ONE task.
-
-            DO NOT implement anything outside the scope of this task.
-            DO NOT duplicate code that has already been implemented (see workspace context below).
-            Write production-quality code — no placeholders, no pseudocode, no TODO comments.
-
             {context_block}
-            TASK TO IMPLEMENT:
-
+            TASK:
             Title: {task["title"]}
             Description: {task["description"]}
             Type: {task["type"]}
 
-            ---
+            OS: {OS_INFO}
 
-            TOOLS AVAILABLE:
+            {feedback_block}
 
-            Use these tools to interact with the filesystem and execute commands:
-
-            - write_file: Write content to a file at the given path. Requires "path" and "content".
-            - read_file: Read the content of a file at the given path. Requires "path".
-            - list_files: List files in a directory. Requires "path".
-            - delete_file: Delete a file at the given path. Requires "path".
-            - run_command: Execute a shell command. Requires "command".
-
-            ---
-
-            ENVIRONMENT:
-
-            - Operating System: {OS_INFO}
-            - Use OS-appropriate commands if run_command is strictly necessary.
-            - On Windows: use 'mkdir', 'copy', 'del' — NOT 'mkdir -p', 'cp', 'rm'
-            - On Linux/Mac: use standard Unix commands
-            - ALWAYS prefer write_file over run_command for file/directory operations.
-            ---
-
-            OUTPUT RULES:
-
-            - "reasoning": Explain your plan before acting. What files will you create or modify, and why.
-            - "actions": The ordered list of tool calls needed to fully implement the task.
-            - "summary": A concrete description of what the actions accomplish.
-
-            Return ONLY valid JSON. Do NOT wrap in markdown.
+            Implement this task. Return ONLY valid JSON.
         """
 
-        raw = self.llm.generate(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-            json_schema=CODE_TASK_SCHEMA
-        )
+        for attempt in range(3):
+            raw = self.llm.generate(
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+                json_schema=CODE_TASK_SCHEMA
+            )
 
-        return json.loads(raw)
+            try:
+                parsed = json.loads(Utils.clean_json(raw))
+
+                if "actions" in parsed and "reasoning" in parsed and "summary" in parsed:
+                    if isinstance(parsed["actions"], list) and len(parsed["actions"]) > 0:
+                        return parsed
+
+                missing = [k for k in ("actions", "reasoning", "summary") if k not in parsed]
+                print(f"  [RETRY {attempt+1}] Missing fields: {missing}. Got keys: {list(parsed.keys())}")
+                prompt += f"\n\nPREVIOUS ATTEMPT FAILED: missing fields {missing}. Return JSON with exactly: reasoning, actions, summary."
+
+            except json.JSONDecodeError as e:
+                print(f"  [RETRY {attempt+1}] Invalid JSON: {e}")
+                prompt += "\n\nPREVIOUS ATTEMPT FAILED: invalid JSON. Return ONLY valid JSON, no markdown."
+
+        return {"reasoning": "Failed to generate valid plan", "actions": [], "summary": "Plan generation failed after 3 attempts"}
 
     def code_task(self, plan, workspace_path):
+        if "actions" not in plan or not isinstance(plan["actions"], list):
+            print(f"  [ERROR] Invalid plan: missing 'actions'. Got keys: {list(plan.keys())}")
+            return {
+                "summary": plan.get("summary", "Invalid plan"),
+                "results": [],
+                "success": False
+            }
+
         results = []
 
         for action in plan["actions"]:
             tool = action.get("tool")
-
-            # Enforce workspace path — inject it into all path-based actions
             path = action.get("path")
-            if path:
-                # Ensure path is always relative to workspace, never absolute
-                if os.path.isabs(path):
-                    results.append({"tool": tool, "result": {"success": False, "error": f"Absolute paths are not allowed: {path}"}})
-                    print(f"  [BLOCKED] {tool}: absolute path rejected: {path}")
-                    continue
 
-            # Validate required fields before dispatching
+            # Block absolute paths
+            if path and os.path.isabs(path):
+                results.append({"tool": tool, "result": {"success": False, "error": f"Absolute path blocked: {path}"}})
+                print(f"  [BLOCKED] {tool}: {path}")
+                continue
+
+            # Validate required fields
             if tool in ("write_file", "read_file", "list_files", "delete_file"):
-                if "path" not in action or not action["path"]:
-                    results.append({"tool": tool, "result": {"success": False, "error": f"Missing required field for {tool}"}})
-                    print(f"  [SKIPPED] {tool}: missing required field")
+                if not path:
+                    results.append({"tool": tool, "result": {"success": False, "error": "Missing path"}})
+                    print(f"  [SKIPPED] {tool}: missing path")
                     continue
             elif tool == "run_command":
-                if "command" not in action or not action["command"]:
-                    results.append({"tool": tool, "result": {"success": False, "error": f"Missing required field for {tool}"}})
-                    print(f"  [SKIPPED] {tool}: missing required field")
+                if not action.get("command"):
+                    results.append({"tool": tool, "result": {"success": False, "error": "Missing command"}})
+                    print(f"  [SKIPPED] {tool}: missing command")
                     continue
 
+            # Dispatch
             if tool == "write_file":
                 result = write_file(action["path"], action.get("content", ""), workspace_path)
             elif tool == "read_file":
@@ -135,18 +129,26 @@ class CoderAgent(BaseAgent):
                 result = delete_file(action["path"], workspace_path)
             elif tool == "run_command":
                 result = run_command(action["command"], workspace_path)
+            elif tool == "replace_in_file":
+                result = replace_in_file(action["path"], action.get("old_str", ""), action.get("new_str", ""), workspace_path)
+            elif tool == "append_file":
+                result = append_file(action["path"], action.get("content", ""), workspace_path)
             else:
                 result = {"success": False, "error": f"Unknown tool: {tool}"}
 
             results.append({"tool": tool, "result": result})
 
             if not result["success"]:
-                print(f"  [FAILED] {tool}: {result['error']}")
+                if tool in ("read_file", "list_files"):
+                    print(f"  [WARN] {tool}: {result['error']} (non-fatal)")
+                else:
+                    print(f"  [FAILED] {tool}: {result['error']}")
             else:
                 print(f"  [OK] {tool}: {action.get('path') or action.get('command')}")
 
+        critical_results = [r for r in results if r["tool"] not in ("read_file", "list_files")]
         return {
-            "summary": plan["summary"],
+            "summary": plan.get("summary", ""),
             "results": results,
-            "success": all(r["result"]["success"] for r in results)
+            "success": len(critical_results) > 0 and all(r["result"]["success"] for r in critical_results)
         }

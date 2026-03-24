@@ -1,4 +1,5 @@
 from agents.base_agent import BaseAgent
+from common.utils import Utils
 import re, json
 
 TASK_SCHEMA = {
@@ -26,10 +27,12 @@ TASK_SCHEMA = {
     }
 }
 
-class TaskerAgent (BaseAgent):
+class TaskerAgent(BaseAgent):
 
     def __init__(self, name, system_prompt, llm):
         super().__init__(name, system_prompt, llm)
+
+    # --- Validation ---
 
     def _is_task_too_big(self, task):
         title = task["title"].lower()
@@ -39,13 +42,12 @@ class TaskerAgent (BaseAgent):
         if any(p in title for p in title_patterns):
             return True
 
-        if self._count_actions(description) > 2:  # antes era > 1
+        if self._count_actions(description) > 2:
             return True
 
         if len(description) > 400:
             return True
 
-        # Múltiples endpoints en una tarea
         endpoints = re.findall(r'(GET|POST|PUT|DELETE|PATCH)\s+/', task["description"])
         if len(endpoints) > 1:
             return True
@@ -71,29 +73,127 @@ class TaskerAgent (BaseAgent):
 
         return issues
 
+    def _validate_dependencies(self, tasks):
+        issues = []
+        task_ids = {t["id"] for t in tasks}
+        task_map = {t["id"]: t for t in tasks}
+
+        # Build specific identifier -> task_id mapping
+        # Only match class names, function names, module names — not generic verbs
+        identifier_to_task = {}
+        for t in tasks:
+            # Extract PascalCase identifiers (class names like MessageBus, LLMClient)
+            classes = re.findall(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b', t["title"])
+            # Extract snake_case identifiers (function names like get_relevant_context)
+            functions = re.findall(r'\b([a-z]+_[a-z_]+)\b', t["title"])
+            # Extract specific filenames
+            files = re.findall(r'[\w/]+\.(?:py|js|ts|yaml|json)\b', t["description"])
+            
+            for identifier in classes + functions + files:
+                identifier_lower = identifier.lower()
+                # Skip overly generic terms
+                if identifier_lower in {"create", "implement", "test", "write", "add", "update"}:
+                    continue
+                identifier_to_task.setdefault(identifier_lower, []).append(t["id"])
+
+        for task in tasks:
+            desc_lower = task["description"].lower()
+            title_lower = task["title"].lower()
+            current_deps = set(task["dependencies"])
+
+            for identifier, source_ids in identifier_to_task.items():
+                # Check if description references this identifier
+                if identifier in desc_lower or identifier in title_lower:
+                    for source_id in source_ids:
+                        if source_id != task["id"] and source_id not in current_deps:
+                            if source_id < task["id"]:
+                                issues.append((task["id"], "missing_dependency", source_id))
+
+            # Validate existing deps
+            for dep in task["dependencies"]:
+                if dep not in task_ids:
+                    issues.append((task["id"], "invalid_dependency", dep))
+                if dep == task["id"]:
+                    issues.append((task["id"], "self_dependency", dep))
+
+        # Global check — but raise threshold
+        if len(tasks) > 10:
+            empty_deps = sum(1 for t in tasks if not t["dependencies"])
+            if empty_deps / len(tasks) > 0.7:
+                issues.append(("global", "too_many_independent_tasks", f"{empty_deps}/{len(tasks)}"))
+
+        return issues
+
+    def _has_dependency_cycle(self, tasks):
+        """Detect cycles in dependency graph using DFS."""
+        task_map = {t["id"]: t for t in tasks}
+        visited = set()
+        rec_stack = set()
+
+        def dfs(task_id):
+            visited.add(task_id)
+            rec_stack.add(task_id)
+            task = task_map.get(task_id)
+            if task:
+                for dep in task["dependencies"]:
+                    if dep not in visited:
+                        if dfs(dep):
+                            return True
+                    elif dep in rec_stack:
+                        return True
+            rec_stack.discard(task_id)
+            return False
+
+        for task in tasks:
+            if task["id"] not in visited:
+                if dfs(task["id"]):
+                    return True
+        return False
+
+    # --- Generation ---
+
+    def generate_tasks(self, plan):
+        prompt = f"""ACTION PLAN TO DECOMPOSE:
+            {plan}
+            Transform this plan into executable tasks. Return ONLY a valid JSON array.
+        """
+
+        raw = self.llm.generate(
+            system=self.system_prompt,
+            messages=[{"role": "user", "content": prompt}],
+            json_schema=TASK_SCHEMA
+        )
+
+        return Utils.clean_json(raw)
+
+    # --- Refinement ---
 
     def _call_refine(self, tasks, issues):
-        problem_ids = {issue[0] for issue in issues}
+        problem_ids = {issue[0] for issue in issues if issue[0] != "global"}
         problem_tasks = [t for t in tasks if t["id"] in problem_ids]
         ok_tasks = [t for t in tasks if t["id"] not in problem_ids]
 
-        print("\nIssues found while refine:", issues)
-        print("Splitting tasks:", [t["id"] for t in problem_tasks])
+        print(f"\nIssues found: {issues}")
+        print(f"Tasks to fix: {[t['id'] for t in problem_tasks]}")
 
-        prompt = f"""
-            You are given a list of tasks that are too large or contain multiple responsibilities.
+        prompt = f"""You are given tasks that need to be fixed.
 
-            YOUR ONLY JOB: Split each task into 2 or more smaller atomic tasks.
+            TASKS WITH ISSUES:
+            {json.dumps(problem_tasks, indent=2)}
 
-            TASKS TO SPLIT:
-            {problem_tasks}
-            ---
+            ISSUES FOUND:
+            {json.dumps([(str(i[0]), i[1], str(i[2]) if len(i) > 2 else "") for i in issues if i[0] != "global"], indent=2)}
 
-            RULES:
-            - Each output task must have a SINGLE responsibility
-            - Preserve dependencies from the original task
-            - Do NOT include tasks that are not in the input list
-            - Return ONLY a valid JSON array of the new split tasks
+            ALL EXISTING TASK IDS (for dependency reference):
+            {json.dumps([t["id"] for t in ok_tasks])}
+
+            FIX RULES:
+            - For "too_many_steps": split into 2+ smaller atomic tasks
+            - For "missing_dependency": add the missing dependency id to the dependencies array
+            - For "invalid_dependency": remove or replace the invalid dependency
+            - Preserve valid dependencies from the original task
+            - Return ONLY a valid JSON array of the fixed tasks
+            - Do NOT include unchanged tasks
             - Do NOT wrap in markdown
         """
 
@@ -105,299 +205,52 @@ class TaskerAgent (BaseAgent):
 
         new_tasks = json.loads(raw)
 
-        # Reasignar IDs a las nuevas tareas
+        # Reassign IDs only for split tasks (new tasks)
+        existing_ids = {t["id"] for t in ok_tasks}
         max_id = max(t["id"] for t in tasks)
-        for i, t in enumerate(new_tasks):
-            t["id"] = max_id + i + 1
 
-        # Construir mapping: old_problem_id → lista de new_ids que heredan sus deps
-        # Agrupamos las nuevas tareas por sus dependencias originales
-        # La clave: las nuevas tareas heredan las deps de la tarea original
-        # así que cualquier referencia a problem_id debe apuntar a TODAS las nuevas
-        new_ids = [t["id"] for t in new_tasks]
-
-        # Actualizar dependencias en ok_tasks
-        for task in ok_tasks:
-            new_deps = []
-            changed = False
-            for dep in task["dependencies"]:
-                if dep in problem_ids:
-                    # Reemplazar con todos los nuevos IDs
-                    new_deps.extend(new_ids)
-                    changed = True
-                else:
-                    new_deps.append(dep)
-            if changed:
-                task["dependencies"] = list(set(new_deps))
+        for t in new_tasks:
+            if t["id"] in existing_ids or t["id"] in problem_ids:
+                # This is a replacement — keep the ID if it was a problem task being fixed
+                if t["id"] not in problem_ids:
+                    max_id += 1
+                    t["id"] = max_id
+            # Validate deps exist
+            t["dependencies"] = [d for d in t["dependencies"] if d in existing_ids or d in {nt["id"] for nt in new_tasks}]
 
         return ok_tasks + new_tasks
 
-    def generate_tasks(self, plan):
-        prompt = f"""
-            INPUT:
-
-            You are given a validated ACTION PLAN.
-
-            Your task is to transform this plan into a structured list of executable tasks.
-
-            ---
-
-            ACTION PLAN:
-
-            {plan}
-
-            ---
-
-            GOAL:
-
-            Generate tasks that can be executed directly by an AI coding agent WITHOUT needing extra clarification.
-
-            ---
-
-            CORE RULES:
-
-            - Each task MUST represent a SINGLE concrete action
-            - Each task MUST be executable in isolation (given its dependencies)
-            - Tasks must be small enough to be completed in one iteration
-
-            ---
-
-            EXECUTION-FOCUSED RULES (CRITICAL):
-
-            - A task must produce a clear output (file, function, endpoint, test, etc.)
-            - A task must NOT contain multiple outcomes
-            - A task must NOT require interpretation
-
-            ---
-
-            SPLITTING RULES (VERY IMPORTANT):
-
-            - If a task includes multiple endpoints → split into one task per endpoint
-            - If a task includes setup + logic → split them
-            - If a task includes multiple operations (create/update/delete) → split them
-            - If a task includes validation + processing → split them
-            - If a task includes DB + API logic → split them
-            - If a task still requires multiple steps to complete, split it further
-            - Each task should ideally map to a single function OR a single step inside a function
-            - If a task description contains multiple verbs (validate, generate, save, insert), split it
-
-            ---
-
-            TASK DESCRIPTION RULES:
-
-            Each description must:
-
-            - Describe EXACTLY what to implement
-            - Include expected behavior/output
-            - Mention constraints if relevant
-            - Be understandable without reading the full plan
-
-            BAD:
-            "Implement file system"
-
-            GOOD:
-            "Implement DiskStorage.save() that stores files in /uploads/{{year}}/{{month}}/{{uuid}}.{{ext}} and returns the relative path"
-
-            ---
-
-            DEPENDENCIES:
-
-            - Only include dependencies if the task CANNOT run without them
-            - Avoid unnecessary chaining
-            - Prefer parallelizable tasks when possible
-
-            ---
-
-            TYPE ASSIGNMENT:
-
-            Assign the most accurate type based on what the task actually does:
-
-            - "backend" → Python logic, database queries, API endpoints, services, repositories, schemas
-            - "infra" → Docker, requirements.txt, alembic configuration, project directory structure, CI/CD, environment setup
-            - "integration" → connects two systems (cache + DB, email + service, background jobs)
-            - "general" → anything that doesn't clearly fit the above
-            - "frontend" → UI components, CSS, client-side JS (unlikely in backend projects)
-
-            IMPORTANT: Do NOT default everything to "backend". Infra and integration tasks must be correctly typed.
-
-            ---
-
-            MODEL ASSIGNMENT:
-
-            Assign complexity honestly based on what the task requires to implement:
-
-            - "light" → config files, simple schemas, basic utility functions, directory creation, small CRUD helpers
-            - "medium" → business logic, DB queries with filters, API endpoints, validation logic, pagination
-            - "heavy" → complex systems that require deep reasoning:
-                - Authentication with token rotation and reuse detection
-                - Cache systems with versioned invalidation
-                - Multi-step atomic transactions
-                - Permission and RBAC systems
-                - Background job orchestration
-                - Soft-delete with cascade operations
-                - Repository methods with window functions
-
-            IMPORTANT: Use "heavy" whenever a task requires designing non-trivial logic, not just writing boilerplate.
-
-            ---
-
-            OUTPUT REQUIREMENTS:
-
-            - Return ONLY a valid JSON array
-            - Do NOT include any text outside the JSON
-            - Do NOT use markdown or ```json
-            - Output must be directly parseable
-
-            ---
-
-            FINAL VALIDATION (MANDATORY):
-
-            Before returning:
-
-            - Check that no task contains multiple responsibilities
-            - Check that each task has a clear output
-            - Check that tasks are small enough for a single execution
-            - Check that types are correctly assigned (not everything is "backend")
-            - Check that heavy tasks are properly identified
-            - If any of the above fails, FIX it before returning
-        """
-
-        return self.llm.generate(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-            json_schema=TASK_SCHEMA
-        )
-    
-    # actually this isn't used
-    def generate_phases(self, plan):
-        prompt = f"""
-            INPUT:
-
-            You are given a validated ACTION PLAN.
-
-            Your task is NOT to create tasks.
-
-            Your task is to organize the plan into EXECUTION PHASES based on dependencies.
-
-            ---
-
-            ACTION PLAN:
-
-            {plan}
-
-            ---
-
-            GOAL:
-
-            Identify a sequence of phases that represent the correct execution order of the system.
-
-            Each phase must group work that can be executed at the same stage of the system.
-
-            ---
-
-            CORE RULES:
-
-            - Phases MUST be ordered by dependency
-            - A phase can ONLY depend on previous phases
-            - NO phase can depend on a future phase
-            - Each phase must be independently executable once its dependencies are completed
-
-            ---
-
-            IMPORTANT:
-
-            Phases are NOT categories like "frontend", "backend", "database"
-
-            Phases MUST represent dependency layers such as:
-
-            - infrastructure
-            - database schema
-            - core entities
-            - business logic
-            - API layer
-            - AI / advanced systems
-
-            ---
-
-            PHASE DESIGN RULES:
-
-            - Each phase must have a clear purpose
-            - Each phase must represent a logical step in system construction
-            - Avoid too many small phases
-            - Avoid mixing unrelated concerns in the same phase
-            - Prefer grouping by dependency, not by technology
-
-            ---
-            PHASE DEFINITION RULE:
-            - A phase MUST represent a dependency layer, NOT a feature group.
-            - If a phase contains multiple independent responsibilities, it MUST be split.
-            - A phase must be the MINIMUM set of work required before the next phase can start.
-            ---
-
-            OUTPUT STRUCTURE:
-
-            Return ONLY valid JSON.
-
-            Do NOT include explanations.
-
-            Format:
-
-            {{
-                "phases": [
-                    {{
-                    "id": integer,
-                    "name": string,
-                    "description": string,
-                    "dependencies": [phase_ids]
-                    }}
-                ]
-            }}
-
-            ---
-
-            VALIDATION (MANDATORY):
-
-            Before returning:
-
-            - Ensure phases are in correct execution order
-            - Ensure no circular dependencies
-            - Ensure each phase only depends on previous phases
-            - Ensure phases reflect real build order (not arbitrary grouping)
-
-            ---
-
-            CRITICAL:
-
-            - Do NOT generate tasks
-            - Do NOT include implementation details
-            - Do NOT explain anything
-            - Output ONLY JSON
-        """
-
-        return self.llm.generate(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-
     def refine(self, tasks, max_attempts=5):
         try:
-            tasks_parsed = json.loads(tasks)
-            issues = self._validate_modularity(tasks_parsed)
+            tasks_parsed = json.loads(tasks) if isinstance(tasks, str) else tasks
             attempts = 0
 
-            while issues and attempts < max_attempts:
-                tasks_parsed = self._call_refine(tasks_parsed, issues)
-                issues = self._validate_modularity(tasks_parsed)
-                print(f"Phase {attempts} of refine.")
+            while attempts < max_attempts:
+                # Check modularity
+                modularity_issues = self._validate_modularity(tasks_parsed)
+
+                # Check dependencies
+                dep_issues = self._validate_dependencies(tasks_parsed)
+
+                # Check cycles
+                if self._has_dependency_cycle(tasks_parsed):
+                    dep_issues.append(("global", "circular_dependency_detected", ""))
+
+                all_issues = modularity_issues + dep_issues
+
+                if not all_issues:
+                    print(f"\nAll validations passed after {attempts} refinement(s).")
+                    break
+
+                print(f"\nRefinement round {attempts + 1}: {len(all_issues)} issues found")
+                tasks_parsed = self._call_refine(tasks_parsed, all_issues)
                 attempts += 1
 
-            if attempts >= max_attempts and issues:
-                print("\nMax attempts reached while refine.")
-            else:
-                print("\nNo more issues found while refine.")
+            if attempts >= max_attempts:
+                print(f"\nMax attempts ({max_attempts}) reached. Remaining issues may exist.")
 
             return tasks_parsed
-        except json.JSONDecodeError:
-            print("Invalid JSON in refine")
+
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON in refine: {e}")
             return []

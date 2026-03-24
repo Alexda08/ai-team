@@ -2,220 +2,148 @@
 
 ## Objective
 
-Build a 6-step high-fashion editorial workflow app that guides users through garment selection, AI-powered model/location analysis, camera specifications, and shot details before generating images via a configurable API adapter.
+Build a complete Python task management system (todo-list) with JSON persistence, CRUD operations, filtering, validation, undo system, interactive CLI, and comprehensive unit tests.
 
 ## Architecture
 
 ```
-EditorialWorkflowApp
-├── State Management (Zustand/React Context)
-│   ├── EditorialState
-│   ├── usePersistedState (localStorage)
-│   └── useDraftRecovery
-├── API Layer
-│   ├── GenerationAdapter (interface)
-│   └── NanoBananaAdapter (implementable)
-├── Components
-│   ├── StepNavigation
-│   ├── Step1Garments
-│   ├── Step2Model
-│   ├── Step3Location
-│   ├── Step4Camera
-│   ├── Step5ShotDetails
-│   ├── Step6Generate
-│   ├── PromptPreviewModal
-│   └── DraftRecoveryBanner
-└── Hooks
-    ├── useAIAnalysis
-    ├── useImageManager
-    ├── useGeneration
-    └── useStepValidation
+┌─────────────────────────────────────────────────────────────┐
+│                         CLI Layer                          │
+│                    (interactive menu)                      │
+├─────────────────────────────────────────────────────────────┤
+│                      TaskManager                            │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐ │
+│  │   CRUD   │  │  Filter  │  │  Undo    │  │  Validation │ │
+│  │ Service  │  │ Service  │  │  Stack   │  │   Rules     │ │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬──────┘ │
+├───────┴─────────────┴─────────────┴────────────────────────┤
+│                    JSONPersistence                         │
+│              (tasks.json + tasks.bak)                      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Modules
 
 | Module | Responsibility |
 |--------|----------------|
-| `EditorialState` | Central state for garments, model, location, camera, shot details |
-| `PersistedState` | localStorage save/restore with thumbnail-only storage |
-| `GenerationAdapter` | Pluggable interface for API calls (sync/async) |
-| `AIAnalysisService` | Claude Vision integration with retry/timeout |
-| `ImageManager` | File handling, thumbnails, ObjectURL lifecycle |
-| `StepValidator` | Dependency checking and requirement enforcement |
+| `models.py` | Task, TaskStatus, TaskPriority dataclasses/enums |
+| `exceptions.py` | ValidationError, CLIError, SystemError |
+| `persistence.py` | JSON load/save with atomic writes and recovery |
+| `validators.py` | Title, description, status, priority validation |
+| `undo.py` | UndoManager with snapshot-based undo stack |
+| `task_manager.py` | Core CRUD + filtering orchestration |
+| `cli.py` | Interactive menu-driven interface |
+| `tests/` | pytest unit tests |
 
 ## Implementation Steps
 
-### Step 1: Project Foundation & State Management
+### Step 1: Models and Enums
+- **Description**: Define `TaskStatus` enum (pending, in_progress, done), `TaskPriority` enum (low, medium, high), and `Task` dataclass with all required fields: id (UUID), title, description, status, priority, created_at, updated_at.
+- **Dependencies**: None
 
-- Initialize Next.js/React project with TypeScript
-- Define `EditorialState` interface with all step fields
-- Set up Zustand store or React Context for state management
-- Configure Tailwind CSS with fashion-forward design tokens
+### Step 2: Custom Exceptions
+- **Description**: Create `ValidationError` (for invalid inputs), `CLIError` (for recoverable CLI errors), `SystemError` (for irrecuperable errors). Define exit codes: 0 (normal), 1 (system error), 2 (invalid arguments).
+- **Dependencies**: None
 
-**Dependencies:** None
+### Step 3: Validators
+- **Description**: Implement validation functions with ordered checks:
+  1. Empty/whitespace → "El título no puede estar vacío"
+  2. Max length (200 for title, 5000 for description) → "El título no puede superar X caracteres"
+  3. Duplicate title → "Ya existe una tarea con ese título"
+- **Dependencies**: Step 1, Step 2
 
----
+### Step 4: JSON Persistence with Atomic Writes
+- **Description**: Implement `JSONPersistence` class with:
+  - `load()`: Read tasks.json, detect JSONDecodeError, trigger recovery
+  - `save()`: Sequence — (1) backup if file exists, (2) write to temp file with fsync, (3) atomic replace
+  - `_handle_corruption()`: Auto-recovery from .bak if valid, else interactive prompt
+  - Auto-create empty file if tasks.json doesn't exist
+- **Dependencies**: Step 2
 
-### Step 2: Step Navigation & Base Layout
+### Step 5: Undo System
+- **Description**: Implement `UndoManager` with:
+  - `UndoAction` dataclass: action_type (create/update/delete), task_snapshot (full task state), timestamp
+  - `record()`: Push action to stack (max 50 items)
+  - `undo()`: Pop and return last action (no redo)
+  - Stack does NOT persist across program restarts
+- **Dependencies**: Step 1
 
-- Build `StepNavigation` component (1-6 indicators)
-- Create `StepContent` with conditional rendering
-- Implement `useStepValidation` hook for dependency checking
-- Add step requirement rules (`STEP_REQUIREMENTS` object)
-- Style step indicators (active/completed/disabled states)
+### Step 6: TaskManager Core
+- **Description**: Implement `TaskManager` class with:
+  - CRUD operations: `create()`, `read()`, `update()`, `delete()`
+  - `filter_tasks()`: status, priority, search_text parameters; match_all=True for AND logic; case_insensitive search by default
+  - `undo()`: Delegate to UndoManager, restore task state based on action_type
+  - Integration with persistence layer
+  - All operations validate inputs before executing
+- **Dependencies**: Step 1, Step 3, Step 4, Step 5
 
-**Dependencies:** Step 1
+### Step 7: CLI Interface
+- **Description**: Implement interactive CLI with numbered menu:
+  - Options 1-9: Create, List, View, Update, Delete, Search, Stats, Help, Exit
+  - Option 0: Undo (only visible when stack > 0, shows count)
+  - Error handling: CLIError prints warning and continues, SystemError prints error and exits(1)
+  - KeyboardInterrupt handled gracefully
+- **Dependencies**: Step 6
 
----
+### Step 8: Unit Tests
+- **Description**: Write pytest tests covering edge cases:
+  - `test_create_duplicate_title_raises`
+  - `test_create_empty_title_raises`
+  - `test_create_whitespace_title_raises`
+  - `test_create_invalid_status_raises`
+  - `test_create_invalid_priority_raises`
+  - `test_delete_nonexistent_raises`
+  - `test_update_nonexistent_raises`
+  - `test_undo_with_empty_stack_raises`
+  - `test_undo_create_restores_task`
+  - `test_undo_delete_restores_task`
+  - `test_undo_update_restores_previous_state`
+  - `test_filter_by_status`
+  - `test_filter_by_priority`
+  - `test_filter_by_text`
+  - `test_filter_combined_and`
+  - `test_filter_combined_or`
+  - `test_filter_case_insensitive`
+  - `test_title_exceeds_max_length`
+  - `test_corruption_recovery_from_backup`
+- **Dependencies**: Step 6
 
-### Step 3: Step 1 — Garments (Drag & Drop)
+## Decisions
 
-- Build `DropZone` component with drag-over visual feedback
-- Implement `useImageManager` hook:
-  - Multiple file upload validation (type, size limits)
-  - Thumbnail generation (200px, JPEG 70%)
-  - ObjectURL management with cleanup
-  - MAX_IMAGES enforcement
-- Create `GarmentGrid` with remove capability
-- Add keyboard accessibility (Enter/Space to trigger file input)
-
-**Dependencies:** Step 2
-
----
-
-### Step 4: Step 2 & 3 — Model & Location with AI Analysis
-
-- Build reusable `AIAnalysisPanel` component
-- Implement `useAIAnalysis` hook:
-  - API call to `/api/analyze` with image payload
-  - 30-second timeout via AbortController
-  - Retry logic (max 2 retries, exponential backoff)
-  - Manual edit fallback capability
-- Create editable description textarea
-- Add error state UI with retry/manual fallback buttons
-- Add confidence badge display
-
-**Dependencies:** Step 2
-
----
-
-### Step 5: Step 4 — Camera Specifications
-
-- Define `CAMERA_ANGLES` array with visual indicators
-- Build `AngleGrid` (3x3 grid) with selection state
-- Create dropdowns for lens, film style, aperture, framing
-- Set up default values in state initialization
-
-**Dependencies:** Step 2
-
----
-
-### Step 6: Step 5 — Shot Details Form
-
-- Build options arrays for lighting, color grade, mood, pose
-- Create select components or button groups for each
-- Implement `KeywordInput` with tag suggestions
-- Add `artDirectionNotes` textarea
-- Wire up all fields to state updates
-
-**Dependencies:** Step 2
-
----
-
-### Step 7: Step 6 — Generate & Prompt Assembly
-
-- Implement `assemblePrompt()` function
-- Build `PromptPreviewModal` with formatted display
-- Show image count summary (garments + references)
-- Create generate button with loading state
-- Implement `useGeneration` hook with async polling support
-
-**Dependencies:** Steps 3, 4, 5, 6
-
----
-
-### Step 8: API Adapter Layer
-
-- Define `GenerationAdapter` interface
-- Implement `NanoBananaAdapter` with FormData submission
-- Add `generate()` method supporting sync/async responses
-- Add optional `status()` method for polling
-- Leave endpoint placeholders for user configuration
-
-**Dependencies:** Step 7
-
----
-
-### Step 9: State Persistence & Draft Recovery
-
-- Implement `usePersistedState` hook:
-  - Save thumbnails only to localStorage
-  - 24-hour expiry with cleanup
-  - Debounced auto-save
-- Build `DraftRecoveryBanner` component
-- Add recover/discard actions
-- Clear full images on refresh (privacy by design)
-
-**Dependencies:** Step 1
-
----
-
-### Step 10: Integration & Error Handling
-
-- Wire all steps into complete workflow
-- Add toast notifications for errors/success
-- Implement step warning banners
-- Add overall loading states
-
-**Dependencies:** Steps 1-9
-
----
-
-### Step 11: Post-MVP Enhancements
-
-#### 11a: Accessibility
-- Add ARIA labels to all interactive elements
-- Implement keyboard navigation for angle grid
-- Add focus management between steps
-- Screen reader announcements for state changes
-
-#### 11b: Mobile Experience
-- Replace drag-and-drop with native file picker fallback
-- Transform angle grid to scrollable button list
-- Responsive layout adjustments
-- Touch-friendly tap targets (min 44px)
-
-#### 11c: Rate Limiting
-- Debounce generate button (500ms)
-- Request deduplication
-- Disable button during active generation
-- Queue management for multiple requests
-
-**Dependencies:** Steps 1-10 (all prior work)
-
----
+| Decision | Justification |
+|----------|---------------|
+| Enums for status/priority | Type safety, autocomplete, prevents typos |
+| Dataclass for Task | Mutable for updates, more readable than dict |
+| Snapshot-based undo | Simpler logic than inverse operations, covers all cases |
+| JSON over SQLite | Human-readable, no external dependencies, sufficient for this scale |
+| UUID over auto-increment | No collision in distributed scenarios |
+| 50-item undo limit | Prevents memory issues, reasonable for CLI usage |
+| Undo stack in memory only | Persisting requires serializing original timestamps, added complexity without proportional benefit |
+| AND as default filter | Most common use case ("pending high priority tasks") |
+| Case-insensitive search | Better UX, user expectation |
+| Backup before write | Guarantees recovery from crash at any point |
 
 ## Risks
 
-| Risk | Mitigation |
-|------|------------|
-| API endpoint unknown | Adapter pattern allows pluggable implementation |
-| Claude Vision cost/availability | Mock mode for development, retry logic for failures |
-| localStorage quota exceeded | Thumbnail-only storage, 24hr expiry, size limits per image |
-| Large image uploads | 10MB limit, compression, File objects for API (not base64) |
-| Async generation timeout | 3-minute polling with progress feedback |
-
----
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| JSON corruption mid-write | Low | High | Atomic write (temp + rename) + .bak |
+| Undo stack memory growth | Low | Low | 50-item hard limit |
+| Concurrent access race | Low | Medium | Document as single-user tool; file locking if needed |
+| Recovery fails | Very Low | High | Interactive prompt allows manual intervention |
+| Search performance with large dataset | Low | Low | Linear scan acceptable for typical use (<10k tasks) |
 
 ## Timeline
 
-| Phase | Steps | Estimated Effort |
-|-------|-------|------------------|
-| Foundation | 1-2 | 1-2 days |
-| Core Steps | 3-6 | 3-4 days |
-| Generation & API | 7-8 | 2 days |
-| Persistence & Polish | 9-10 | 1-2 days |
-| **MVP Total** | 1-10 | **7-10 days** |
-| Post-MVP | 11a-c | 2-3 days |
+**Estimated Total**: 6-8 hours
 
-**Note:** Excludes design system polish, testing, and deployment setup.
+| Step | Estimated Time |
+|------|----------------|
+| Step 1: Models and Enums | 30 min |
+| Step 2: Custom Exceptions | 15 min |
+| Step 3: Validators | 30 min |
+| Step 4: JSON Persistence | 1 hour |
+| Step 5: Undo System | 45 min |
+| Step 6: TaskManager Core | 1.5 hours |
+| Step 7: CLI Interface | 1 hour |
+| Step 8: Unit Tests | 1.5 hours |

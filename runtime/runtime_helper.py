@@ -31,4 +31,11 @@ class RuntimeHelper:
             print("ERROR getting tasks:", e)
             return []
 
-    
+    @staticmethod
+    def get_completed_tasks():
+        try:
+            with open("output/completed_tasks.json", "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print("ERROR getting completed tasks:", e)
+            return []

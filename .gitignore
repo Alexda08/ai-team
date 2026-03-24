@@ -23,5 +23,7 @@ htmlcov/
 .coverage.*
 
 # Generated files
+workspace/
+workspace/*
 output/
 output/*

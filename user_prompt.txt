@@ -1,9 +1,10 @@
-I want a full high-fashion editorial app. Here's how it works:
+Quiero un sistema de gestión de tareas (todo-list) en Python con las siguientes características:
 
-The 6-step workflow:
-Garments — drag & drop multiple clothing images; they're stored as reference images sent to the API
-Model — upload a model photo; click "Describe with AI" and Claude vision analyzes it and writes a detailed casting-style physical description automatically
-Location — same flow — upload a reference and Claude describes the environment for you
-Camera — visual selector grid for shot angle, plus dropdowns for lens, film style, aperture, and framing
-Shot Details — lighting, color grade, mood, pose direction, style keywords (tags), and free-form art direction notes
-Generate — assembles everything into a structured prompt, previews it, then fires it at the Nano Banana API
+1. Una clase TaskManager que almacene tareas en un archivo JSON como persistencia.
+2. Cada tarea tiene: id (uuid), title, description, status (pending/in_progress/done), priority (low/medium/high), created_at, updated_at.
+3. Operaciones CRUD completas: create, read, update, delete.
+4. Un sistema de filtrado que permita buscar tareas por status, por priority, y por texto en title/description.
+5. Validación estricta: no permitir status o priority inválidos, no permitir títulos vacíos, no permitir duplicados por título.
+6. Undo system: poder deshacer la última operación (create, update, delete) restaurando el estado anterior.
+7. Un CLI interactivo con un menú que permita usar todas las operaciones.
+8. Tests unitarios con pytest que cubran los casos edge: crear duplicados, borrar inexistente, undo sin operaciones previas, filtros combinados.

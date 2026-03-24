@@ -13,7 +13,7 @@ class AgentRuntime:
             "phase": "ideation",
             "plan": RuntimeHelper.get_plan(),
             "tasks": RuntimeHelper.get_tasks(),
-            "completed_tasks": [],
+            "completed_tasks": RuntimeHelper.get_completed_tasks(),
             "issues": []
         }
 
@@ -69,6 +69,11 @@ class AgentRuntime:
         response = tasker.generate_tasks(self.state["plan"])
         refined_response = tasker.refine(response)
 
+        if not refined_response:
+            print("\n[ERROR] Tasking produced no tasks. Stopping pipeline.")
+            self.state["phase"] = "failed"
+            return
+
         Utils.save_text("output/tasks.json", json.dumps(refined_response, indent=2))
         self.state["tasks"] = refined_response
         self.state["phase"] = "execution"
@@ -76,10 +81,21 @@ class AgentRuntime:
     def run_execution(self):
         Utils.console_print("\nExecution running...\n", "yellow", bold=True)
         executor = self.agents["Executor"]
-        coder = self.agents["Coder"]
+
+        if self.state["completed_tasks"]:
+            response = Utils.select_menu(options={"clean": "Start fresh", "continue": "Continue from last execution"}, title="Do you want to continue from the last execution?")
+            
+            if response == "clean":
+                executor.clean_workspace()
+                self.state["completed_tasks"] = []
 
         for task in self.state["tasks"]:
-            result = executor.run_task(task, coder, self.workspace_context_bus, self.state["completed_tasks"])
+            # Skip already completed tasks
+            if task["id"] in self.state["completed_tasks"]:
+                print(f"\n  [SKIP] Task {task['id']}: {task['title']} (already completed)")
+                continue
+            
+            result = executor.run_task(task, self.workspace_context_bus, self.state["completed_tasks"])
 
             if result["success"]:
                 self.state["completed_tasks"].append(result["task_id"])
@@ -87,7 +103,9 @@ class AgentRuntime:
             else:
                 self.state["phase"] = "failed"
                 break
-        self.state["phase"] = "failed"
+
+        Utils.save_text("output/completed_tasks.json", json.dumps(self.state["completed_tasks"], indent=2))
+        self.state["phase"] = "done"
 
 
     # Main runtime loop ----------------------------------------------------------------------------------

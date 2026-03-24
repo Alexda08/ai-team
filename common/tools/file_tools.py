@@ -3,7 +3,6 @@ import shutil
 
 WORKSPACE_PATH = "./workspace"
 
-
 def _resolve(path: str, workspace_path: str = WORKSPACE_PATH) -> str:
     workspace = os.path.realpath(workspace_path)
     resolved = os.path.realpath(os.path.join(workspace, path))
@@ -73,5 +72,44 @@ def delete_file(path: str, workspace_path: str = WORKSPACE_PATH) -> dict:
         return {"success": False, "error": str(e)}
     except OSError as e:
         return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def replace_in_file(path: str, old_str: str, new_str: str, workspace_path: str = WORKSPACE_PATH) -> dict:
+    try:
+        full_path = _resolve(path, workspace_path)
+        with open(full_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if old_str not in content:
+            return {"success": False, "error": f"String not found in {path}"}
+
+        if content.count(old_str) > 1:
+            return {"success": False, "error": f"Multiple matches found for the string in {path}. Be more specific."}
+
+        updated = content.replace(old_str, new_str, 1)
+
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(updated)
+
+        return {"success": True, "path": path}
+    except PermissionError as e:
+        return {"success": False, "error": str(e)}
+    except FileNotFoundError:
+        return {"success": False, "error": f"File not found: {path}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def append_file(path: str, content: str, workspace_path: str = WORKSPACE_PATH) -> dict:
+    try:
+        full_path = _resolve(path, workspace_path)
+        with open(full_path, "a", encoding="utf-8") as f:
+            f.write(content)
+        return {"success": True, "path": path}
+    except PermissionError as e:
+        return {"success": False, "error": str(e)}
+    except FileNotFoundError:
+        return {"success": False, "error": f"File not found: {path}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
