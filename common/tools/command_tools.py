@@ -1,5 +1,4 @@
-import os
-import subprocess
+import os, subprocess
 
 WORKSPACE_PATH = "./workspace"
 

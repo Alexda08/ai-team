@@ -5,6 +5,9 @@ class MessageBus:
     def __init__(self):
         self.messages = []
 
+    def clear(self):
+        self.messages = []
+
     def publish(self, message, metadata=None):
         msg = copy.deepcopy(message)
 

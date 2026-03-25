@@ -7,16 +7,21 @@
 - Retry tasks with escalated models and feedback✅
 - Auto Retry on validation failure✅
 - Auto Retry on wrong format for coder✅
-- implement save point of task execution✅
+- implement save point of task execution and resume from it✅
 
 --- v2: CURRENT
-- Implement refination to planning
-- Implement skills to agents
+- Implementation of smart_edit tool✅
+- Dynamic feedback on plan_task and code_task✅
+- Re-design tasker phase
+- Implement run_final_validation with a loop to valide and debug whole project until it is correct
+- Implement EvaluationAgent and hole sistem in a parallel thread while agent_runtime
+
 - Implement asking questions to user in ideation in order to get an more accurate plan
 - Implement persistent memory of successful executions
 
--- v3
-- Implement EvaluationAgent and hole sistem in a parallel thread while agent_runtime
+-- v3: PLANED
+- Implement skills to agents
+- Implement refination to planning
 - Implement SystemAgent:
     (throgh main pipeline if a Agent fails if retrying it can work again, they will asks why it failed to the SystemAgent,
     SystemAgent will give a a explanation based on the current system and a way to fix it, and the Agent will be able to retry it.

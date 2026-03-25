@@ -74,24 +74,70 @@ class ExecutorAgent(BaseAgent):
         return None, None
 
     def _attempt_task(self, task, coder, workspace_context_bus, retry_feedback=None):
-        # Try to execute a task with retries. Returns (success, result, last_feedback).
         res_coder = None
+        feedback_history = []
+        
+        if retry_feedback:
+            feedback_history.append(retry_feedback)
 
         for attempt in range(self.max_retries + 1):
-            action_plan = coder.plan_task(task, workspace_context_bus, retry_feedback)
+            current_feedback = "\n".join(feedback_history) if feedback_history else None
+            
+            action_plan = coder.plan_task(task, workspace_context_bus, current_feedback)
             print(f"  [PLAN] actions: {[a.get('tool') for a in action_plan.get('actions', [])]}")
             res_coder = coder.code_task(action_plan, WORKSPACE_PATH)
 
             if not res_coder["success"]:
                 actions_used = [a.get("tool") for a in action_plan.get("actions", [])]
-                # TODO: improve feedback based on what was missing or incorrect in the action plan
-                retry_feedback = (
-                    f"FAILED: You only used {actions_used}. "
-                    f"You MUST include write_file actions. "
-                    f"Task: {task['description']}"
-                )
+                smart_edit_used = "smart_edit" in actions_used
+                read_used = any(a in actions_used for a in ("read_file", "file_summary", "read_file_lines"))
+
+                # smart_edit was used but failed
+                if smart_edit_used:
+                    failed_errors = [r["result"].get("error", "") for r in res_coder.get("results", [])
+                                    if r.get("tool") == "smart_edit" and not r.get("result", {}).get("success")]
+                    error_text = "; ".join(failed_errors)
+
+                    if "not found" in error_text.lower():
+                        new_feedback = (
+                            f"smart_edit failed: {error_text}. "
+                            f"The function/class does not exist yet. "
+                            f"Use action='add_function' instead of 'replace_function'. "
+                            f"If adding to a class, include 'class_name'. "
+                            f"Example: {{\"tool\": \"smart_edit\", \"path\": \"<file>\", \"action\": \"add_function\", \"class_name\": \"<ClassName>\", \"content\": \"<your code>\"}} "
+                            f"Task: {task['description']}"
+                        )
+                    else:
+                        new_feedback = (
+                            f"smart_edit failed: {error_text}. "
+                            f"Try a different action: create, add_function, replace_function, add_import, append. "
+                            f"Task: {task['description']}"
+                        )
+
+                # Only reads, no smart_edit
+                elif read_used and not smart_edit_used:
+                    new_feedback = (
+                        f"You used {actions_used} but never called smart_edit. "
+                        f"After reading the file, you MUST call smart_edit to make changes. "
+                        f"Example: {{\"tool\": \"smart_edit\", \"path\": \"<file>\", \"action\": \"add_function\", \"class_name\": \"<ClassName>\", \"content\": \"<your code>\"}} "
+                        f"Task: {task['description']}"
+                    )
+
+                # No actions at all
+                elif not actions_used:
+                    new_feedback = (
+                        f"No actions produced. Use smart_edit: "
+                        f"action='create' for new files, action='add_function' for existing files. "
+                        f"Task: {task['description']}"
+                    )
+
+                # Fallback
+                else:
+                    new_feedback = self.validator.build_dynamic_feedback(task, res_coder, {"status": "FAILED", "issues": "No output produced"})
+
+                feedback_history.append(f"Attempt {attempt + 1}: {new_feedback}")
                 print(f"  [FAILED] Coder produced no output on attempt {attempt + 1}")
-                
+                print(f"  [FEEDBACK] {new_feedback[:150]}")
                 if attempt < self.max_retries:
                     print(f"  [RETRY] Attempt {attempt + 2}/{self.max_retries + 1}")
                 continue
@@ -104,15 +150,18 @@ class ExecutorAgent(BaseAgent):
                     print(f"  [PASSED] {validation.get('reason', '')}")
                     return True, {"task_id": task["id"], "summary": res_coder["summary"], "success": True}, None
 
-                retry_feedback = validation.get("issues", "Validation failed")
-                print(f"  [ISSUES] {retry_feedback}")
+                new_feedback = self.validator.build_dynamic_feedback(task, res_coder, validation)
+                feedback_history.append(f"Attempt {attempt + 1}: {new_feedback}")
+                print(f"  [FEEDBACK] {new_feedback[:200]}")
                 if attempt < self.max_retries:
                     print(f"  [RETRY] Attempt {attempt + 2}/{self.max_retries + 1}")
                 continue
 
             return True, {"task_id": task["id"], "summary": res_coder["summary"], "success": res_coder["success"]}, None
 
-        return False, res_coder, retry_feedback
+        # Return last feedback for escalation
+        last_feedback = feedback_history[-1] if feedback_history else "All attempts failed"
+        return False, res_coder, last_feedback
 
     def clean_workspace(self):
         if os.path.exists(WORKSPACE_PATH):

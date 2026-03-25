@@ -73,6 +73,8 @@ class AgentRuntime:
             print("\n[ERROR] Tasking produced no tasks. Stopping pipeline.")
             self.state["phase"] = "failed"
             return
+            
+        refined_response.sort(key=lambda t: t["id"])
 
         Utils.save_text("output/tasks.json", json.dumps(refined_response, indent=2))
         self.state["tasks"] = refined_response
@@ -93,6 +95,7 @@ class AgentRuntime:
             # Skip already completed tasks
             if task["id"] in self.state["completed_tasks"]:
                 print(f"\n  [SKIP] Task {task['id']}: {task['title']} (already completed)")
+                # self.workspace_context_bus.publish(str(task["id"]) + " already completed")
                 continue
             
             result = executor.run_task(task, self.workspace_context_bus, self.state["completed_tasks"])
@@ -100,6 +103,9 @@ class AgentRuntime:
 
             if result["success"]:
                 self.state["completed_tasks"].append(result["task_id"])
+                # now after each task, clear the workspace context bus, i only pas the context of previous task to
+                # the next task, remove this clear to pass full context to each task
+                self.workspace_context_bus.clear()
                 self.workspace_context_bus.publish(result["summary"])
             else:
                 self.state["phase"] = "failed"
