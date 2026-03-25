@@ -96,6 +96,7 @@ class AgentRuntime:
                 continue
             
             result = executor.run_task(task, self.workspace_context_bus, self.state["completed_tasks"])
+            self.state["phase"] = "done"
 
             if result["success"]:
                 self.state["completed_tasks"].append(result["task_id"])
@@ -105,8 +106,6 @@ class AgentRuntime:
                 break
 
         Utils.save_text("output/completed_tasks.json", json.dumps(self.state["completed_tasks"], indent=2))
-        self.state["phase"] = "done"
-
 
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):

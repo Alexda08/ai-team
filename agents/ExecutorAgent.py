@@ -29,7 +29,6 @@ class ExecutorAgent(BaseAgent):
             Utils.console_print("Validator ready", "green", bold=True)
 
     def _build_coder_pool(self, model_map):
-        """Create one Coder per unique LLM. Multiple model sizes can share the same Coder."""
         seen_llms = {}
 
         for size, llm in model_map.items():
@@ -49,7 +48,7 @@ class ExecutorAgent(BaseAgent):
         Utils.console_print(f"  Coder pool ready: {list(self.coder_pool.keys())} ({len(seen_llms)} unique LLMs)", "yellow", bold=True)
 
     def _get_coder(self, task):
-        """Get the appropriate Coder for a task's model size."""
+        # Get the appropriate Coder for a task's model size.
         model_size = task.get("model", "medium")
 
         if model_size in self.coder_pool:
@@ -75,7 +74,7 @@ class ExecutorAgent(BaseAgent):
         return None, None
 
     def _attempt_task(self, task, coder, workspace_context_bus, retry_feedback=None):
-        """Try to execute a task with retries. Returns (success, result, last_feedback)."""
+        # Try to execute a task with retries. Returns (success, result, last_feedback).
         res_coder = None
 
         for attempt in range(self.max_retries + 1):
@@ -85,12 +84,14 @@ class ExecutorAgent(BaseAgent):
 
             if not res_coder["success"]:
                 actions_used = [a.get("tool") for a in action_plan.get("actions", [])]
+                # TODO: improve feedback based on what was missing or incorrect in the action plan
                 retry_feedback = (
                     f"FAILED: You only used {actions_used}. "
                     f"You MUST include write_file actions. "
                     f"Task: {task['description']}"
                 )
                 print(f"  [FAILED] Coder produced no output on attempt {attempt + 1}")
+                
                 if attempt < self.max_retries:
                     print(f"  [RETRY] Attempt {attempt + 2}/{self.max_retries + 1}")
                 continue

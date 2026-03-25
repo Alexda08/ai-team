@@ -115,6 +115,21 @@ class ValidatorAgent(BaseAgent):
                     written.append(path)
         return written
 
+    # def _get_dinamic_feedback(self, issues):
+    #     prompt = f"""
+    #         Given the following validation issues:
+    #         {issues}
+
+    #         Return your assessment.
+    #     """
+
+    #     response = self.llm.generate(
+    #         system=self.system_prompt,
+    #         messages=[{"role": "user", "content": prompt}]
+    #     )
+
+    #     return response
+
     def _parse_response(self, response, files_checked):
         """Parse VALIDATOR response into structured result."""
         status_match = re.search(r"STATUS\s*:\s*(PASSED|FAILED)", response, re.IGNORECASE)
@@ -133,10 +148,11 @@ class ValidatorAgent(BaseAgent):
             return {
                 "status": "PASSED",
                 "reason": reason_match.group(1).strip() if reason_match else "Validation passed",
-                "files_checked": files_checked
+                "files_checked": files_checked,
             }
         else:
             issues_match = re.search(r"ISSUES\s*:\s*(.+)", response, re.IGNORECASE | re.DOTALL)
+            # TODO: build interactive feedback based on issues
             return {
                 "status": "FAILED",
                 "issues": issues_match.group(1).strip() if issues_match else "Unknown issues",

@@ -10,6 +10,7 @@
 - implement save point of task execution✅
 
 --- v2: CURRENT
+- Implement refination to planning
 - Implement skills to agents
 - Implement asking questions to user in ideation in order to get an more accurate plan
 - Implement persistent memory of successful executions
