@@ -90,6 +90,8 @@ class AgentRuntime:
             if response == "clean":
                 executor.clean_workspace()
                 self.state["completed_tasks"] = []
+        else:
+            executor.clean_workspace()
 
         for task in self.state["tasks"]:
             # Skip already completed tasks
