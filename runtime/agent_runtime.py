@@ -12,6 +12,7 @@ class AgentRuntime:
         self.state = {
             "phase": "ideation",
             "plan": RuntimeHelper.get_plan(),
+            "blueprint": RuntimeHelper.get_blueprint(),
             "tasks": RuntimeHelper.get_tasks(),
             "completed_tasks": RuntimeHelper.get_completed_tasks(),
             "issues": []
@@ -55,18 +56,41 @@ class AgentRuntime:
     def run_planning(self):
         Utils.console_print("\nPlanning running...\n", "magenta", bold=True)
         thinker = self.agents["Thinker"]
+        architect = self.agents["Architect"]
+        turn = 0
+
         plan = thinker.generate_plan(self.message_bus.history())
-        Utils.save_text("output/plan.md", plan)
-        self.state["plan"] = plan
+
+        print("\nPlan generated. architect reviewing...\n")
+
+        while turn < self.max_turns:
+            review = architect.review_plan(plan)
+            criteria = review.get("criteria", {})
+ 
+            if review["status"] == "VIABLE":
+                print(f"[ARCHITECT] PASSED Plan is viable")
+                Utils.save_text("output/plan.md", plan)
+                self.state["plan"] = plan
+                break
+
+            # REWORK: Thinker revises the plan using architect's feedback
+            unclear = [k for k, v in criteria.items() if v == "UNCLEAR"]
+            print(f"  [REWORK] Round {turn + 1} | Unclear: {unclear}")
+            plan = thinker.generate_plan(plan, feedback=review)
+            turn += 1
+
+        blueprint = architect.generate_bluePrint(plan)
+        self.state["blueprint"] = blueprint
+        Utils.save_text("output/blueprint.md", blueprint)
 
         self.state["phase"] = "tasking"
-        print("\nPlan has been generated.\n")
 
     def run_tasking(self):
         Utils.console_print("\nTasking running...\n", "red", bold=True)
         tasker = self.agents["Tasker"]
+        # architect = self.agents["Architect"]
 
-        response = tasker.generate_tasks(self.state["plan"])
+        response = tasker.generate_tasks(self.state["blueprint"])
         refined_response = tasker.refine(response)
 
         if not refined_response:

@@ -4,6 +4,7 @@ from agents.ThinkerAgent import ThinkerAgent
 from agents.TaskerAgent import TaskerAgent
 from agents.ExecutorAgent import ExecutorAgent
 from agents.CoderAgent import CoderAgent
+from agents.ArchitectAgent import ArchitectAgent
 from runtime.agent_runtime import AgentRuntime
 from common.utils import Utils
 
@@ -39,6 +40,11 @@ def main():
         "Tasker":TaskerAgent(
             name="Tasker",
             system_prompt=prompts["tasker_prompt"],
+            llm=llm
+        ),
+        "Architect": ArchitectAgent(
+            name="Architect",
+            system_prompt=prompts["architect_prompt"],
             llm=llm
         ),
         "Executor": ExecutorAgent(
