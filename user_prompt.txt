@@ -1,16 +1,1 @@
-Haz una todo-list en Python con estas características:
-
-Una clase TaskManager.
-Cada tarea tiene:
-id
-title
-status (pending o done)
-Operaciones básicas:
-agregar tarea
-listar tareas
-marcar tarea como completada
-eliminar tarea
-Validaciones mínimas:
-no permitir títulos vacíos
-no permitir tareas duplicadas por título
-Un menú en consola para usar el programa.
+Quiero un sistema de reservas de biblioteca: un usuario puede registrarse, buscar libros por título/autor, reservar un libro (máximo 3 activos), devolver un libro, y ver su historial. Persistencia en JSON. CLI con menú. Validar que no se pueda reservar un libro ya reservado por otro usuario.

@@ -1,25 +1,25 @@
 --- v1: DONE
-- Acabar pipeline de main runtime✅
-- Fix execution✅
-- Fix CoderAgent✅
-- Fix workspace situation✅
-- Implement ValidatorAgent✅
-- Retry tasks with escalated models and feedback✅
-- Auto Retry on validation failure✅
-- Auto Retry on wrong format for coder✅
-- implement save point of task execution and resume from it✅
+- [✅] Acabar pipeline de main runtime
+- [✅] Fix execution
+- [✅] Fix CoderAgent
+- [✅] Fix workspace situation
+- [✅] Implement ValidatorAgent
+- [✅] Retry tasks with escalated models and feedback
+- [✅] Auto Retry on validation failure
+- [✅] Auto Retry on wrong format for coder
+- [✅] implement save point of task execution and resume from it
 
 --- v2: CURRENT
-- Implementation of smart_edit tool✅
-- Dynamic feedback on plan_task and code_task✅
-- Add ArchitectAgent✅
-- Add blueprint.md✅
-- Add ArchitectAgent review and retry with feedback in planning phase✅
-
-- Implant debate with ArchitectAgent in tasking phase
-- Re-design tasker phase
-- Implement run_final_validation with a loop to valide and debug whole project until it is correct
-- Implement EvaluationAgent and hole sistem in a parallel thread while agent_runtime
+- [✅] Implementation of smart_edit tool
+- [✅] Dynamic feedback on plan_task and code_task
+- [✅] Add ArchitectAgent
+- [✅] Add blueprint.md
+- [✅] Add ArchitectAgent review and retry with feedback in planning phase
+- [ ] Implement run_final_validation with a loop to valide and debug whole project until it is correct
+- [ ] Re-design tasker phase
+- [ ] Improve summaries of success tasks in execution for better workspace context
+- [ ] Implant debate with ArchitectAgent in tasking phase
+- [ ] Implement EvaluationAgent and hole sistem in a parallel thread while agent_runtime
 
 - Implement asking questions to user in ideation in order to get an more accurate plan
 - Implement persistent memory of successful executions

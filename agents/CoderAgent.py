@@ -39,7 +39,7 @@ class CoderAgent(BaseAgent):
     def __init__(self, name, system_prompt, llm):
         super().__init__(name, system_prompt, llm)
 
-    def plan_task(self, task, workspace_context_bus, retry_feedback=None):
+    def plan_task(self, task, workspace_context_bus, retry_feedback=None, file_context=None, sibling_context=None):
         context_block = "WORKSPACE: Empty — no files exist yet."
 
         if workspace_context_bus and workspace_context_bus.history():
@@ -47,16 +47,27 @@ class CoderAgent(BaseAgent):
             summaries = "\n".join(f"- {s}" for s in recent)
             context_block = f"WORKSPACE (recent implementations — do NOT duplicate):\n{summaries}"
 
+        file_block = ""
+        if file_context:
+            file_block = f"\n{file_context}\nUse EXACT method names and signatures shown above. Do NOT invent methods that don't exist. Do NOT call file_summary — you already have all file states."
+
+        sibling_block = ""
+        if sibling_context:
+            sibling_block = f"\n{sibling_context}"
+
         feedback_block = ""
         if retry_feedback:
             feedback_block = f"\nPREVIOUS ATTEMPT FAILED:\n{retry_feedback}\nFix this issue."
 
-        base_prompt = f"""{context_block}
+        base_prompt = f"""
+            {context_block}
+            {file_block}
+            {sibling_block}
 
             TASK:
             Title: {task["title"]}
             Description: {task["description"]}
-            Type: {task["type"]}
+            Type: {task.get("type", "backend")}
 
             OS: {OS_INFO}
             {feedback_block}

@@ -1,29 +1,37 @@
 from agents.base_agent import BaseAgent
 from common.utils import Utils
-import re, json
+import json
 
-TASK_SCHEMA = {
+TASK_TREE_SCHEMA = {
     "type": "array",
     "items": {
         "type": "object",
         "properties": {
             "id": {"type": "integer"},
             "title": {"type": "string"},
-            "description": {"type": "string"},
-            "type": {
-                "type": "string",
-                "enum": ["frontend", "backend", "infra", "integration", "general"]
-            },
-            "model": {
-                "type": "string",
-                "enum": ["light", "medium", "heavy"]
-            },
-            "dependencies": {
+            "file": {"type": "string"},
+            "depends_on": {
                 "type": "array",
                 "items": {"type": "integer"}
+            },
+            "subtasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "model": {
+                            "type": "string",
+                            "enum": ["light", "medium", "heavy"]
+                        }
+                    },
+                    "required": ["id", "title", "description", "model"]
+                }
             }
         },
-        "required": ["id", "title", "description", "type", "model", "dependencies"]
+        "required": ["id", "title", "file", "depends_on", "subtasks"]
     }
 }
 
@@ -32,225 +40,180 @@ class TaskerAgent(BaseAgent):
     def __init__(self, name, system_prompt, llm):
         super().__init__(name, system_prompt, llm)
 
+    # --- Generation ---
+
+    def generate_tasks(self, blueprint, plan=None):
+        if plan:
+            prompt = f"""
+                PROJECT BLUEPRINT:
+                {blueprint}
+                
+                ACTION PLAN:
+                {plan}
+                
+                Transform the Blueprint and Plan into a tree of executable task groups.
+                Each group maps to ONE file from the Blueprint. Each subtask is an atomic coding unit.
+                
+                REMEMBER:
+                - Copy file paths EXACTLY from the Blueprint
+                - Copy depends_on from the Blueprint's DEPENDENCY ORDER
+                - Every subtask description must start with "In {{file_path}}:"
+                - Include method signatures from the Blueprint in descriptions
+                - Include business context from the Plan in descriptions
+                - Do NOT create groups for empty __init__.py files
+                
+                Return ONLY a valid JSON array of groups.
+            """
+        else:
+            prompt = f"""
+                PROJECT BLUEPRINT:
+                {blueprint}
+                
+                Transform this Blueprint into a tree of executable task groups.
+                Each group maps to ONE file from the Blueprint. Each subtask is an atomic coding unit.
+                
+                REMEMBER:
+                - Copy file paths EXACTLY from the Blueprint
+                - Copy depends_on from the Blueprint's DEPENDENCY ORDER
+                - Every subtask description must start with "In {{file_path}}:"
+                - Include method signatures from the Blueprint in descriptions
+                - Use the Blueprint's purpose and notes fields for context in descriptions
+                - Do NOT create groups for empty __init__.py files
+                
+                Return ONLY a valid JSON array of groups.
+            """
+ 
+        raw = self.llm.generate(
+            system=self.system_prompt,
+            messages=[{"role": "user", "content": prompt}],
+            json_schema=TASK_TREE_SCHEMA
+        )
+ 
+        return Utils.clean_json(raw)
+
     # --- Validation ---
 
-    def _is_task_too_big(self, task):
-        title = task["title"].lower()
-        description = task["description"].lower()
+    def validate(self, task_tree):
+        # """Validate the task tree structure and return issues list."""
+        try:
+            groups = json.loads(task_tree) if isinstance(task_tree, str) else task_tree
+        except json.JSONDecodeError as e:
+            return None, [f"Invalid JSON: {e}"]
 
-        title_patterns = [" and create ", " and implement ", " and configure ", " and set up ", " and add ", " then "]
-        if any(p in title for p in title_patterns):
-            return True
-
-        if self._count_actions(description) > 2:
-            return True
-
-        if len(description) > 400:
-            return True
-
-        endpoints = re.findall(r'(GET|POST|PUT|DELETE|PATCH)\s+/', task["description"])
-        if len(endpoints) > 1:
-            return True
-
-        return False
-
-    def _count_actions(self, description):
-        verbs = ["create", "validate", "save", "insert", "delete", "update", "generate"]
-        return sum(1 for v in verbs if re.search(rf"\b{v}\b", description.lower()))
-
-    def _validate_modularity(self, tasks):
         issues = []
-        seen = set()
+        group_ids = {g["id"] for g in groups}
 
-        for task in tasks:
-            task_id = task["id"]
-            if task_id in seen:
-                continue
+        for group in groups:
+            gid = group["id"]
 
-            if self._is_task_too_big(task):
-                issues.append((task_id, "too_many_steps"))
-                seen.add(task_id)
+            # Check depends_on references exist
+            for dep in group.get("depends_on", []):
+                if dep not in group_ids:
+                    issues.append(f"Group {gid}: depends_on group {dep} which does not exist")
+                if dep == gid:
+                    issues.append(f"Group {gid}: self-dependency")
 
-        return issues
+            # Check file is present
+            if not group.get("file"):
+                issues.append(f"Group {gid}: missing file path")
 
-    def _validate_dependencies(self, tasks):
-        issues = []
-        task_ids = {t["id"] for t in tasks}
-        task_map = {t["id"]: t for t in tasks}
+            # Check subtasks exist
+            subtasks = group.get("subtasks", [])
+            if not subtasks:
+                issues.append(f"Group {gid}: has no subtasks")
 
-        # Build specific identifier -> task_id mapping
-        # Only match class names, function names, module names — not generic verbs
-        identifier_to_task = {}
-        for t in tasks:
-            # Extract PascalCase identifiers (class names like MessageBus, LLMClient)
-            classes = re.findall(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b', t["title"])
-            # Extract snake_case identifiers (function names like get_relevant_context)
-            functions = re.findall(r'\b([a-z]+_[a-z_]+)\b', t["title"])
-            # Extract specific filenames
-            files = re.findall(r'[\w/]+\.(?:py|js|ts|yaml|json)\b', t["description"])
-            
-            for identifier in classes + functions + files:
-                identifier_lower = identifier.lower()
-                # Skip overly generic terms
-                if identifier_lower in {"create", "implement", "test", "write", "add", "update"}:
-                    continue
-                identifier_to_task.setdefault(identifier_lower, []).append(t["id"])
+            for st in subtasks:
+                sid = st.get("id", "?")
 
-        for task in tasks:
-            desc_lower = task["description"].lower()
-            title_lower = task["title"].lower()
-            current_deps = set(task["dependencies"])
+                # Check subtask id format
+                if not isinstance(sid, str) or "." not in sid:
+                    issues.append(f"Subtask {sid}: id must be string format 'group.number' (e.g., '{gid}.1')")
 
-            for identifier, source_ids in identifier_to_task.items():
-                # Check if description references this identifier
-                if identifier in desc_lower or identifier in title_lower:
-                    for source_id in source_ids:
-                        if source_id != task["id"] and source_id not in current_deps:
-                            if source_id < task["id"]:
-                                issues.append((task["id"], "missing_dependency", source_id))
+                # Check description starts with file path
+                desc = st.get("description", "")
+                if not desc.startswith("In "):
+                    issues.append(f"Subtask {sid}: description must start with 'In {{file_path}}:'")
 
-            # Validate existing deps
-            for dep in task["dependencies"]:
-                if dep not in task_ids:
-                    issues.append((task["id"], "invalid_dependency", dep))
-                if dep == task["id"]:
-                    issues.append((task["id"], "self_dependency", dep))
+                # Check description is not too vague
+                if len(desc) < 50:
+                    issues.append(f"Subtask {sid}: description too short ({len(desc)} chars), needs more detail")
 
-        # Global check — but raise threshold
-        if len(tasks) > 10:
-            empty_deps = sum(1 for t in tasks if not t["dependencies"])
-            if empty_deps / len(tasks) > 0.7:
-                issues.append(("global", "too_many_independent_tasks", f"{empty_deps}/{len(tasks)}"))
+                # Check model is valid
+                if st.get("model") not in ("light", "medium", "heavy"):
+                    issues.append(f"Subtask {sid}: invalid model '{st.get('model')}'")
 
-        return issues
+        # Check for circular dependencies between groups
+        if self._has_group_cycle(groups):
+            issues.append("Circular dependency detected between groups")
 
-    def _has_dependency_cycle(self, tasks):
-        """Detect cycles in dependency graph using DFS."""
-        task_map = {t["id"]: t for t in tasks}
+        return groups, issues
+
+    def _has_group_cycle(self, groups):
+        # """Detect cycles in group dependency graph using DFS."""
+        graph = {g["id"]: g.get("depends_on", []) for g in groups}
         visited = set()
         rec_stack = set()
 
-        def dfs(task_id):
-            visited.add(task_id)
-            rec_stack.add(task_id)
-            task = task_map.get(task_id)
-            if task:
-                for dep in task["dependencies"]:
-                    if dep not in visited:
-                        if dfs(dep):
-                            return True
-                    elif dep in rec_stack:
+        def dfs(gid):
+            visited.add(gid)
+            rec_stack.add(gid)
+            for dep in graph.get(gid, []):
+                if dep not in visited:
+                    if dfs(dep):
                         return True
-            rec_stack.discard(task_id)
+                elif dep in rec_stack:
+                    return True
+            rec_stack.discard(gid)
             return False
 
-        for task in tasks:
-            if task["id"] not in visited:
-                if dfs(task["id"]):
+        for g in groups:
+            if g["id"] not in visited:
+                if dfs(g["id"]):
                     return True
         return False
 
-    # --- Generation ---
+    # --- Flatten for execution ---
 
-    def generate_tasks(self, plan):
-        prompt = f"""ACTION PLAN TO DECOMPOSE:
-            {plan}
-            Transform this plan into executable tasks. Return ONLY a valid JSON array.
-        """
+    def flatten(self, task_tree):
+        # """Flatten tree into ordered list of subtasks for the Executor.
+        # Groups are topologically sorted by depends_on, subtasks within a group are sequential."""
+        groups = json.loads(task_tree) if isinstance(task_tree, str) else task_tree
 
-        raw = self.llm.generate(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-            json_schema=TASK_SCHEMA
-        )
+        # Topological sort of groups
+        sorted_groups = self._topo_sort(groups)
 
-        return Utils.clean_json(raw)
+        flat_tasks = []
+        for group in sorted_groups:
+            for subtask in group.get("subtasks", []):
+                flat_tasks.append({
+                    "id": subtask["id"],
+                    "title": subtask["title"],
+                    "description": subtask["description"],
+                    "model": subtask["model"],
+                    "file": group["file"],
+                    "group_id": group["id"],
+                    "group_title": group["title"]
+                })
 
-    # --- Refinement ---
+        return flat_tasks
 
-    def _call_refine(self, tasks, issues):
-        problem_ids = {issue[0] for issue in issues if issue[0] != "global"}
-        problem_tasks = [t for t in tasks if t["id"] in problem_ids]
-        ok_tasks = [t for t in tasks if t["id"] not in problem_ids]
+    def _topo_sort(self, groups):
+        # """Topological sort of groups by depends_on."""
+        group_map = {g["id"]: g for g in groups}
+        visited = set()
+        result = []
 
-        print(f"\nIssues found: {issues}")
-        print(f"Tasks to fix: {[t['id'] for t in problem_tasks]}")
+        def visit(gid):
+            if gid in visited:
+                return
+            visited.add(gid)
+            group = group_map.get(gid)
+            if group:
+                for dep in group.get("depends_on", []):
+                    visit(dep)
+                result.append(group)
 
-        prompt = f"""You are given tasks that need to be fixed.
+        for g in groups:
+            visit(g["id"])
 
-            TASKS WITH ISSUES:
-            {json.dumps(problem_tasks, indent=2)}
-
-            ISSUES FOUND:
-            {json.dumps([(str(i[0]), i[1], str(i[2]) if len(i) > 2 else "") for i in issues if i[0] != "global"], indent=2)}
-
-            ALL EXISTING TASK IDS (for dependency reference):
-            {json.dumps([t["id"] for t in ok_tasks])}
-
-            FIX RULES:
-            - For "too_many_steps": split into 2+ smaller atomic tasks
-            - For "missing_dependency": add the missing dependency id to the dependencies array
-            - For "invalid_dependency": remove or replace the invalid dependency
-            - Preserve valid dependencies from the original task
-            - Return ONLY a valid JSON array of the fixed tasks
-            - Do NOT include unchanged tasks
-            - Do NOT wrap in markdown
-        """
-
-        raw = self.llm.generate(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-            json_schema=TASK_SCHEMA
-        )
-
-        new_tasks = json.loads(raw)
-
-        # Reassign IDs only for split tasks (new tasks)
-        existing_ids = {t["id"] for t in ok_tasks}
-        max_id = max(t["id"] for t in tasks)
-
-        for t in new_tasks:
-            if t["id"] in existing_ids or t["id"] in problem_ids:
-                # This is a replacement — keep the ID if it was a problem task being fixed
-                if t["id"] not in problem_ids:
-                    max_id += 1
-                    t["id"] = max_id
-            # Validate deps exist
-            t["dependencies"] = [d for d in t["dependencies"] if d in existing_ids or d in {nt["id"] for nt in new_tasks}]
-
-        return ok_tasks + new_tasks
-
-    def refine(self, tasks, max_attempts=5):
-        try:
-            tasks_parsed = json.loads(tasks) if isinstance(tasks, str) else tasks
-            attempts = 0
-
-            while attempts < max_attempts:
-                # Check modularity
-                modularity_issues = self._validate_modularity(tasks_parsed)
-
-                # Check dependencies
-                dep_issues = self._validate_dependencies(tasks_parsed)
-
-                # Check cycles
-                if self._has_dependency_cycle(tasks_parsed):
-                    dep_issues.append(("global", "circular_dependency_detected", ""))
-
-                all_issues = modularity_issues + dep_issues
-
-                if not all_issues:
-                    print(f"\nAll validations passed after {attempts} refinement(s).")
-                    break
-
-                print(f"\nRefinement round {attempts + 1}: {len(all_issues)} issues found")
-                tasks_parsed = self._call_refine(tasks_parsed, all_issues)
-                attempts += 1
-
-            if attempts >= max_attempts:
-                print(f"\nMax attempts ({max_attempts}) reached. Remaining issues may exist.")
-
-            return tasks_parsed
-
-        except json.JSONDecodeError as e:
-            print(f"Invalid JSON in refine: {e}")
-            return []
+        return result

@@ -4,6 +4,7 @@ from agents.ThinkerAgent import ThinkerAgent
 from agents.TaskerAgent import TaskerAgent
 from agents.ExecutorAgent import ExecutorAgent
 from agents.CoderAgent import CoderAgent
+from agents.ValidatorAgent import ValidatorAgent
 from agents.ArchitectAgent import ArchitectAgent
 from runtime.agent_runtime import AgentRuntime
 from common.utils import Utils
@@ -53,7 +54,11 @@ def main():
             llm=llm,
             model_map=model_map,
             coder_prompt=prompts["coder_prompt"],
-            validator_prompt=prompts["validator_prompt"]
+        ),
+        "Validator": ValidatorAgent(
+            name="Validator",
+            system_prompt=prompts["validator_prompt"],
+            llm=llm
         )
     }
 
@@ -72,7 +77,7 @@ def main():
         "planning": "Start from Planning",
         "tasking": "Start from Tasking",
         "execution": "Start from Execution",
-        "none": "Exit",
+        "none": "Exit"
     })
 
     if mode == "none":

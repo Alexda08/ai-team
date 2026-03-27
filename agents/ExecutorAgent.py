@@ -3,6 +3,7 @@ from agents.base_agent import BaseAgent
 from agents.CoderAgent import CoderAgent
 from agents.ValidatorAgent import ValidatorAgent
 from common.utils import Utils
+from runtime.message_bus import MessageBus
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE_PATH = os.path.join(BASE_DIR, "workspace")
@@ -10,23 +11,15 @@ WORKSPACE_PATH = os.path.join(BASE_DIR, "workspace")
 class ExecutorAgent(BaseAgent):
     ESCALATION_CHAIN = {"light": "medium", "medium": "heavy", "heavy": "ultra"}
 
-    def __init__(self, name, system_prompt, llm, model_map=None, coder_prompt=None, validator_prompt=None):
+    def __init__(self, name, system_prompt, llm, model_map=None, coder_prompt=None):
         super().__init__(name, system_prompt, llm)
         self.coder_pool = {}
         self.coder_prompt = coder_prompt
-        self.validator = None
         self.max_retries = 2
+        self.all_tasks = []
 
         if model_map and coder_prompt:
             self._build_coder_pool(model_map)
-        
-        if validator_prompt:
-            self.validator = ValidatorAgent(
-                name="Validator",
-                system_prompt=validator_prompt,
-                llm=llm
-            )
-            Utils.console_print("Validator ready", "green", bold=True)
 
     def _build_coder_pool(self, model_map):
         seen_llms = {}
@@ -73,7 +66,7 @@ class ExecutorAgent(BaseAgent):
             return self.coder_pool[next_tier], next_tier
         return None, None
 
-    def _attempt_task(self, task, coder, workspace_context_bus, retry_feedback=None):
+    def _attempt_task(self, task, coder, validator, workspace_context_bus, retry_feedback=None, sibling_context=None):
         res_coder = None
         feedback_history = []
         
@@ -82,8 +75,9 @@ class ExecutorAgent(BaseAgent):
 
         for attempt in range(self.max_retries + 1):
             current_feedback = "\n".join(feedback_history) if feedback_history else None
-            
-            action_plan = coder.plan_task(task, workspace_context_bus, current_feedback)
+            file_context = self._get_file_context(task)
+
+            action_plan = coder.plan_task(task, workspace_context_bus, current_feedback, file_context, sibling_context=sibling_context)
             print(f"  [PLAN] actions: {[a.get('tool') for a in action_plan.get('actions', [])]}")
             res_coder = coder.code_task(action_plan, WORKSPACE_PATH)
 
@@ -94,8 +88,12 @@ class ExecutorAgent(BaseAgent):
 
                 # smart_edit was used but failed
                 if smart_edit_used:
-                    failed_errors = [r["result"].get("error", "") for r in res_coder.get("results", [])
-                                    if r.get("tool") == "smart_edit" and not r.get("result", {}).get("success")]
+                    failed_errors = [
+                        r["result"].get("error", "")
+                        for r in res_coder.get("results", [])
+                        if r.get("tool") == "smart_edit"
+                        and not r.get("result", {}).get("success")
+                    ]
                     error_text = "; ".join(failed_errors)
 
                     if "not found" in error_text.lower():
@@ -133,7 +131,7 @@ class ExecutorAgent(BaseAgent):
 
                 # Fallback
                 else:
-                    new_feedback = self.validator.build_dynamic_feedback(task, res_coder, {"status": "FAILED", "issues": "No output produced"})
+                    new_feedback = validator.build_dynamic_feedback(task, res_coder, {"status": "FAILED", "issues": "No output produced"})
 
                 feedback_history.append(f"Attempt {attempt + 1}: {new_feedback}")
                 print(f"  [FAILED] Coder produced no output on attempt {attempt + 1}")
@@ -142,15 +140,15 @@ class ExecutorAgent(BaseAgent):
                     print(f"  [RETRY] Attempt {attempt + 2}/{self.max_retries + 1}")
                 continue
 
-            if self.validator:
-                validation = self.validator.validate_task(task, res_coder)
+            if validator:
+                validation = validator.validate_task(task, res_coder)
                 print(f"  [VALIDATE] {validation['status']}")
 
                 if validation["status"] == "PASSED":
                     print(f"  [PASSED] {validation.get('reason', '')}")
                     return True, {"task_id": task["id"], "summary": res_coder["summary"], "success": True}, None
 
-                new_feedback = self.validator.build_dynamic_feedback(task, res_coder, validation)
+                new_feedback = validator.build_dynamic_feedback(task, res_coder, validation)
                 feedback_history.append(f"Attempt {attempt + 1}: {new_feedback}")
                 print(f"  [FEEDBACK] {new_feedback[:200]}")
                 if attempt < self.max_retries:
@@ -163,20 +161,69 @@ class ExecutorAgent(BaseAgent):
         last_feedback = feedback_history[-1] if feedback_history else "All attempts failed"
         return False, res_coder, last_feedback
 
+    def _get_sibling_context(self, task, completed_ids):
+        gid = task.get("group_id")
+        if not gid:
+            return None
+        siblings = [
+            f"- [{t['id']}] {t['title']}: {t['description'][:150]}"
+            for t in self.all_tasks
+            if t.get("group_id") == gid and t["id"] != task["id"] and t["id"] in completed_ids
+        ]
+        if not siblings:
+            return None
+        return "COMPLETED TASKS IN THIS GROUP (use their signatures/names):\n" + "\n".join(siblings)
+    
+    def _get_file_context(self, task):
+        from common.tools import file_summary, list_files
+        target = task.get("file")
+        files = list_files(".", WORKSPACE_PATH)
+        if not files["success"]:
+            return None
+        summaries = []
+        for f in files.get("files", []):
+            if not f.endswith(('.py', '.js', '.ts', '.json')):
+                continue
+            result = file_summary(f, WORKSPACE_PATH)
+            if result["success"]:
+                prefix = ">>> TARGET" if target and f.endswith(target) else "    "
+                summaries.append(f"{prefix} {f}:\n{result['content']}")
+        if not summaries:
+            return None
+        return "WORKSPACE FILES (use these exact signatures):\n" + "\n".join(summaries)
+
+    def _get_workspace_summary(self):
+        """List files in workspace with their function/class signatures."""
+        from common.tools import file_summary, list_files
+        files = list_files(".", WORKSPACE_PATH)
+        if not files["success"]:
+            return "Could not read workspace"
+        
+        summaries = []
+        for f in files.get("files", []):
+            if f.endswith(('.py', '.js', '.ts')):
+                result = file_summary(f, WORKSPACE_PATH)
+                if result["success"]:
+                    summaries.append(f"--- {f} ---\n{result['content']}")
+        return "\n".join(summaries)
+
     def clean_workspace(self):
         if os.path.exists(WORKSPACE_PATH):
             shutil.rmtree(WORKSPACE_PATH)
         os.makedirs(WORKSPACE_PATH)
 
-    def run_task(self, task, workspace_context_bus, completed_tasks):
+    def run_task(self, task, workspace_context_bus, completed_tasks, validator):
         print(f"\nExecuting task {task['id']}: {task['title']} [{task.get('model', 'medium')}]")
 
         current_model = task.get("model", "medium")
         coder = self._get_coder(task)
         print(f"  Using: {coder.name} ({coder.llm.provider}:{coder.llm.model})")
+        
+        # Get context for sibling tasks
+        sibling_context = self._get_sibling_context(task, completed_tasks)
 
         # First attempt with assigned model
-        success, result, last_feedback = self._attempt_task(task, coder, workspace_context_bus)
+        success, result, last_feedback = self._attempt_task(task, coder, validator, workspace_context_bus, sibling_context=sibling_context)
         if success:
             return result
 
@@ -191,13 +238,15 @@ class ExecutorAgent(BaseAgent):
             escalated_coder = self.coder_pool[next_tier]
             print(f"\n  [ESCALATE] {tier} -> {next_tier} ({escalated_coder.llm.provider}:{escalated_coder.llm.model})")
 
+            file_context = self._get_file_context(task) or "File does not exist yet."
             escalation_feedback = (
                 f"A weaker model failed this task. "
                 f"Implement it completely. "
-                f"Previous failure: {last_feedback}"
+                f"Previous failure: {last_feedback}\n\n"
+                f"{file_context}"
             )
 
-            success, result, last_feedback = self._attempt_task(task, escalated_coder, workspace_context_bus, escalation_feedback)
+            success, result, last_feedback = self._attempt_task(task, escalated_coder, validator, workspace_context_bus, escalation_feedback, sibling_context=sibling_context)
             if success:
                 return result
 
@@ -206,17 +255,42 @@ class ExecutorAgent(BaseAgent):
         print(f"  [EXHAUSTED] Task {task['id']} failed after all tiers")
         return {"task_id": task["id"], "summary": "Failed after all escalation tiers", "success": False}
 
-    def run_final_validation(self, tasks, completed_tasks):
-        """Run final project-wide validation."""
-        if not self.validator:
-            print("  [SKIP] No validator configured")
+    def run_final_validation(self, validator, tasks, completed_tasks, max_rounds=3):
+        if not validator:
             return {"status": "SKIPPED"}
 
-        print("\n  Running final project validation...")
-        result = self.validator.validate_project(tasks, completed_tasks)
+        result = validator.validate_project(tasks, completed_tasks)
         print(f"  [FINAL] {result['status']}")
+        prev_fix_count = None
 
-        if result["status"] == "FAILED":
-            print(f"  [ISSUES] {result.get('issues', '')}")
+        for round_num in range(1, max_rounds + 1):
+            if result["status"] != "FAILED" or not result.get("fixes"):
+                break
+
+            current_fix_count = len(result["fixes"])
+            if prev_fix_count is not None and current_fix_count >= prev_fix_count:
+                print(f"  [ABORT] Fixes not decreasing ({prev_fix_count} -> {current_fix_count})")
+                break
+
+            prev_fix_count = current_fix_count
+            print(f"\n  [DEBUG ROUND {round_num}/{max_rounds}] ({current_fix_count} fixes)")
+
+            debug_context_bus = MessageBus()
+            for i, fix in enumerate(result["fixes"]):
+                fix_task = {
+                    "id": f"fix.{round_num}.{i+1}",
+                    "title": f"Fix: {fix.get('method', fix['file'])}",
+                    "description": fix["description"],
+                    "file": fix["file"],
+                    "model": "medium",
+                    "group_id": f"fix.{round_num}"
+                }
+                print(f"  [FIX {i+1}/{current_fix_count}] {fix['issue']}")
+                task_result = self.run_task(fix_task, debug_context_bus, [], validator)
+                if not task_result.get("success"):
+                    print(f"  [ERROR] Fix {fix_task['id']} failed, continuing")
+
+            result = validator.validate_project(tasks, completed_tasks)
+            print(f"  [REVALIDATE] {result['status']}")
 
         return result

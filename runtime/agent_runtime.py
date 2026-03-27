@@ -57,16 +57,22 @@ class AgentRuntime:
         Utils.console_print("\nPlanning running...\n", "magenta", bold=True)
         thinker = self.agents["Thinker"]
         architect = self.agents["Architect"]
+        turn = 0
 
         plan = thinker.generate_plan(self.message_bus.history())
         print("\nPlan generated. architect reviewing...\n")
 
         review = architect.review_plan(plan)
-        # fix infinite loop
-        while review["status"] != "VIABLE":
+        while review["status"] != "VIABLE" and turn < self.max_turns:
             plan = thinker.generate_plan(plan, feedback=review)
             review = architect.review_plan(plan)
             print(f"  [REWORK] Round {review["status"]} | Unclear: {review['criteria']['required']}")
+            turn += 1
+
+        if turn >= self.max_turns:
+            print("\nMax turns reached in planning phase.")
+            self.state["phase"] = "failed"
+            return
 
         print(f"[ARCHITECT] PASSED Plan is viable")
         Utils.save_text("output/plan.md", plan)
@@ -81,28 +87,44 @@ class AgentRuntime:
     def run_tasking(self):
         Utils.console_print("\nTasking running...\n", "red", bold=True)
         tasker = self.agents["Tasker"]
-        # architect = self.agents["Architect"]
+        architect = self.agents["Architect"]
 
-        response = tasker.generate_tasks(self.state["blueprint"])
-        refined_response = tasker.refine(response)
+        print("  [TASKER] Generating task tree...")
+        raw_tree = tasker.generate_tasks(self.state["blueprint"], plan=self.state["plan"])
+        task_tree, issues = tasker.validate(raw_tree)
 
-        if not refined_response:
+        if task_tree is None:
+            print(f"\n[ERROR] Tasking failed: {issues}")
+            self.state["phase"] = "failed"
+            return
+ 
+        if issues:
+            print(f"  [VALIDATE] {len(issues)} issues found:")
+            for issue in issues[:10]:
+                print(f"    - {issue}")
+
+        # Save tree structure
+        Utils.save_text("output/tasks_tree.json", json.dumps(task_tree, indent=2))
+ 
+        # Flatten for execution
+        if not (flat_tasks := tasker.flatten(task_tree)):
             print("\n[ERROR] Tasking produced no tasks. Stopping pipeline.")
             self.state["phase"] = "failed"
             return
-            
-        refined_response.sort(key=lambda t: t["id"])
 
-        Utils.save_text("output/tasks.json", json.dumps(refined_response, indent=2))
-        self.state["tasks"] = refined_response
+        Utils.save_text("output/tasks.json", json.dumps(flat_tasks, indent=2))
+        self.state["tasks"] = flat_tasks
         self.state["phase"] = "execution"
 
     def run_execution(self):
         Utils.console_print("\nExecution running...\n", "yellow", bold=True)
         executor = self.agents["Executor"]
+        validator = self.agents["Validator"]
+
+        executor.all_tasks = self.state["tasks"]
 
         if self.state["completed_tasks"]:
-            response = Utils.select_menu(options={"clean": "Start fresh", "continue": "Continue from last execution"}, title="Do you want to continue from the last execution?")
+            response = Utils.select_menu(options={"continue": "Continue from last execution", "clean": "Start fresh"}, title="Do you want to continue from the last execution?")
             
             if response == "clean":
                 executor.clean_workspace()
@@ -110,28 +132,31 @@ class AgentRuntime:
         else:
             executor.clean_workspace()
 
+        self.state["phase"] = "done"
         for task in self.state["tasks"]:
             # Skip already completed tasks
             if task["id"] in self.state["completed_tasks"]:
                 print(f"\n  [SKIP] Task {task['id']}: {task['title']} (already completed)")
-                self.workspace_context_bus.publish(str(task["id"]) + " already completed")
+                self.workspace_context_bus.publish("Task: "+ str(task["id"])+"->"+ task["description"] + " already completed")
                 continue
             
-            result = executor.run_task(task, self.workspace_context_bus, self.state["completed_tasks"])
-            self.state["phase"] = "done"
+            result = executor.run_task(task, self.workspace_context_bus, self.state["completed_tasks"], validator)
 
             if result["success"]:
                 self.state["completed_tasks"].append(result["task_id"])
-                # now after each task, clear the workspace context bus, i only pas the context of previous task to
-                # the next task, remove this clear to pass full context to each task
-                # self.workspace_context_bus.clear()
                 self.workspace_context_bus.publish(result["summary"])
             else:
                 self.state["phase"] = "failed"
-                break
+                Utils.save_text("output/completed_tasks.json", json.dumps(self.state["completed_tasks"], indent=2))
+                return
+        
+        print("\n  Running final project validation...")
+        final_validation = executor.run_final_validation(validator, self.state["tasks"], self.state["completed_tasks"])
 
-        Utils.save_text("output/completed_tasks.json", json.dumps(self.state["completed_tasks"], indent=2))
-
+        if final_validation["status"] == "FAILED":
+            self.state["phase"] = "failed"
+            return
+        
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):
         self.message_bus.publish({
@@ -148,7 +173,7 @@ class AgentRuntime:
                 self.run_tasking()
             elif self.state["phase"] == "execution":
                 self.run_execution()
-        
+
         if self.state["phase"] == "failed":
             print("\nRuntime failed.\n")
         elif self.state["phase"] == "done":
