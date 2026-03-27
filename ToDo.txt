@@ -12,6 +12,11 @@
 --- v2: CURRENT
 - Implementation of smart_edit tool✅
 - Dynamic feedback on plan_task and code_task✅
+- Add ArchitectAgent✅
+- Add blueprint.md✅
+- Add ArchitectAgent review and retry with feedback in planning phase✅
+
+- Implant debate with ArchitectAgent in tasking phase
 - Re-design tasker phase
 - Implement run_final_validation with a loop to valide and debug whole project until it is correct
 - Implement EvaluationAgent and hole sistem in a parallel thread while agent_runtime

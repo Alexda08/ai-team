@@ -39,3 +39,11 @@ class RuntimeHelper:
         except Exception as e:
             print("ERROR getting completed tasks:", e)
             return []
+
+    @staticmethod
+    def get_blueprint():
+        try:
+            with open("output/blueprint.md", "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            return None

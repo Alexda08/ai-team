@@ -2,265 +2,193 @@
 
 ## Objective
 
-Build a production-ready Task Manager system in Python with JSON persistence, strict validation, filtering, undo/redo capabilities, cross-platform file locking, and conflict resolution.
+Desarrollar un sistema de gestión de tareas (todo-list) en Python con persistencia JSON, validación estricta, sistema de undo, CLI interactivo y tests unitarios completos.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CLI (Entry Point)                     │
-├─────────────────────────────────────────────────────────┤
-│              Application Layer (TaskManager)             │
-│  - CRUD orchestration                                   │
-│  - Undo stack management                                │
-│  - Conflict detection & resolution                      │
-│  - Safe save with retry logic                           │
-├─────────────────────────────────────────────────────────┤
-│               Domain Layer                               │
-│  - Task entity (dataclass)                              │
-│  - Status/Priority enums                                │
-│  - Validation rules                                      │
-│  - Filter logic                                          │
-├─────────────────────────────────────────────────────────┤
-│             Persistence Layer (TaskRepository)            │
-│  - JSON file I/O                                        │
-│  - File locking (cross-platform)                        │
-│  - Corruption handling with backup                      │
-│  - Atomic writes                                        │
-└─────────────────────────────────────────────────────────┘
+├── task.py              # Modelo de datos Task
+├── storage.py           # Capa de persistencia JSON
+├── task_manager.py      # Lógica de negocio + Undo
+├── cli.py               # Interfaz de línea de comandos
+├── main.py              # Punto de entrada
+└── tests/
+    ├── __init__.py
+    └── test_task_manager.py  # Suite completa de tests
 ```
+
+**Patrón arquitectónico:** MVC simplificado con capa de persistencia separada. El TaskManager actúa como fachada central que orquesta todas las operaciones.
+
+**Decisión de diseño:** Se usará un patrón Command para el sistema de undo, donde cada operación guarda su estado previo como un comando ejecutable inverso.
 
 ## Modules
 
-| Module | Responsibility |
-|--------|----------------|
-| `models.py` | Task dataclass, Status/Priority enums, exceptions |
-| `repository.py` | TaskRepository, FileLock, JSON persistence, file locking |
-| `manager.py` | TaskManager (CRUD, filters, undo, conflict resolution) |
-| `cli.py` | Interactive command-line interface |
-| `test_task_manager.py` | pytest test suite |
+| Módulo | Responsabilidad | API Pública |
+|--------|-----------------|-------------|
+| `task.py` | Definición de estructura Task, enum Status/Priority | `Task`, `Status`, `Priority` |
+| `storage.py` | Lectura/escritura JSON, gestión de archivo | `JSONStorage.load()`, `JSONStorage.save()` |
+| `task_manager.py` | CRUD, validación, filtrado, undo | `create()`, `get()`, `update()`, `delete()`, `filter()`, `undo()` |
+| `cli.py` | Menú interactivo, formateo de salida | `run_cli()` |
 
 ## Implementation Steps
 
-### Step 1: Domain Layer - Models
-**Description**: Create the foundational domain classes and enums.
-- Define `Status` enum: `PENDING`, `IN_PROGRESS`, `DONE`
-- Define `Priority` enum: `LOW`, `MEDIUM`, `HIGH`
-- Create `Task` dataclass with fields: `id` (UUID), `title`, `description`, `status`, `priority`, `created_at`, `updated_at`
-- Define custom exceptions: `TaskValidationError`, `DuplicateTitleError`, `TaskNotFoundError`, `UndoUnavailableError`, `ConflictError`, `BackupNotSavedError`
-- Define constants: `MAX_TITLE_LENGTH=200`, `MAX_DESCRIPTION_LENGTH=5000`
-- Implement `TaskConflict` dataclass for conflict resolution
+### Step 1: Modelo de Datos (task.py)
 
-**Dependencies**: None
+**Descripción:** Definir las clases `Task`, `Status` (enum: pending/in_progress/done) y `Priority` (enum: low/medium/high). Incluir validación básica en `__post_init__`.
 
----
+**Dependencias:** Ninguna
 
-### Step 2: Persistence Layer - FileLock
-**Description**: Implement cross-platform file locking mechanism.
-- Create `FileLock` class with implementation priority: `portalocker` → `fcntl` → `msvcrt` → `noop`
-- Use `getattr(portalocker, 'LOCK_NB', 0)` for non-blocking flag compatibility
-- Implement timeout with retry loop using `time.monotonic()`
-- Add exponential backoff for msvcrt fallback
-- Protect against reacquire without release (raise `RuntimeError`)
-- Track `has_real_locking` property
-- Track `lock_type` property
-
-**Dependencies**: Step 1
+```python
+@dataclass
+class Task:
+    id: str  # UUID
+    title: str
+    description: str
+    status: Status
+    priority: Priority
+    created_at: datetime
+    updated_at: datetime
+```
 
 ---
 
-### Step 3: Persistence Layer - TaskRepository
-**Description**: Implement JSON persistence with corruption handling.
-- Create `TaskRepository` class with:
-  - `load()`: Read JSON, handle corruption with try/except, fallback to empty list
-  - `_backup_corrupted()`: Rename corrupt file to `.json.corrupted`
-  - `_deserialize()`: Full validation of all fields (id, title, status, priority, dates)
-  - `_serialize()`: Convert Task to JSON-compatible dict
-  - `save()`: Atomic write using temp file + `os.replace()`
-  - `load_warnings` property: Return list of ignored malformed tasks
-- Implement `ConcurrentModificationError` detection by comparing task IDs
-- Use `FileLock` for exclusive access during writes
+### Step 2: Capa de Persistencia (storage.py)
 
-**Dependencies**: Step 1, Step 2
+**Descripción:** Implementar clase `JSONStorage` que maneje lectura/escritura atómica del archivo JSON. Incluir métodos `load()` y `save()` con manejo de archivo inexistente/corrupto.
+
+**Dependencias:** Step 1
+
+**Consideraciones:** Usar escritura atómica con archivo temporal para prevenir corrupción de datos en escrituras parciales.
 
 ---
 
-### Step 4: Application Layer - UndoStack
-**Description**: Implement undo/redo stack mechanism.
-- Create `OperationType` enum: `CREATE`, `UPDATE`, `DELETE`
-- Create `UndoEntry` dataclass: `operation`, `task_snapshot` (deepcopy), `task_id`, `affected_index`
-- Create `UndoStack` class with:
-  - `push()`: Add entry, evict oldest if at `max_size` (default 50)
-  - `pop()`: Return and remove last entry
-  - `is_empty()`: Check if stack is empty
-  - `size()`: Return current count
-  - `remaining()`: Return slots until limit
-  - `clear()`: Empty the stack
-- Track `max_size` and warn when oldest entry is dropped
+### Step 3: TaskManager - CRUD Básico (task_manager.py, Parte 1)
 
-**Dependencies**: Step 1
+**Descripción:** Implementar la clase `TaskManager` con operaciones `create()`, `get(id)`, `list_all()`, `update()`, `delete()`. Cargar datos desde storage en `__init__`.
+
+**Dependencias:** Step 1, Step 2
+
+**Notas:** Create debe generar UUID y timestamps automáticamente. Update debe modificar solo `updated_at`.
 
 ---
 
-### Step 5: Application Layer - TaskManager Core
-**Description**: Implement TaskManager with CRUD operations and validation.
-- Create `TaskManager` class:
-  - `__init__()`: Initialize repository, load tasks, create undo stack, store startup warnings
-  - Validation methods: `_validate_title()`, `_validate_unique_title()`, `_validate_status()`, `_validate_priority()`
-  - CRUD: `create()`, `get()`, `update()`, `delete()`, `list_all()`
-  - Filters: `filter()` with status, priority, search (case-insensitive), limit/offset pagination
-- Implement strict validation:
-  - Empty or whitespace-only titles → `TaskValidationError`
-  - Duplicate titles (case-insensitive) → `DuplicateTitleError`
-  - Invalid status/priority values → `TaskValidationError`
-  - Length limits: title ≤ 200 chars, description ≤ 5000 chars
-- All mutations save via `_safe_save()`
+### Step 4: Validación Estricta (task_manager.py, Parte 2)
 
-**Dependencies**: Step 1, Step 3, Step 4
+**Descripción:** Agregar validación en todas las operaciones:
+- `create()`: título no vacío, título único (sin duplicados por título)
+- `update()`: campos válidos (status/priority en enum), título único si cambia
+- `delete()`: tarea debe existir
+
+**Dependencias:** Step 3
+
+**Decisiones:** Lanzar excepciones personalizadas (`ValidationError`, `NotFoundError`, `DuplicateError`) para facilitar testing y mensajes de error claros.
 
 ---
 
-### Step 6: Application Layer - Safe Save & Conflict Resolution
-**Description**: Implement safe save with retry, merge, and conflict detection.
-- Implement `_create_emergency_backup()`: Save to `tempfile.gettempdir()/taskmanager_backups/`
-- Implement `_safe_save()`:
-  - Retry loop (configurable `max_retries`, default 2)
-  - On `ConcurrentModificationError`: create backup, reload external tasks, detect conflicts
-  - Reload `external_tasks` on each retry iteration
-  - Show `load_warnings` after each reload
-  - If conflicts detected → raise `ConflictError` and clear undo stack
-  - If no conflicts → merge and retry
-  - Log and raise `BackupNotSavedError` if all retries fail
-- Implement `_detect_conflicts()`: Compare tasks with same ID but different content
-- Implement `_merge_without_conflicts()`: Add external tasks with new IDs only
-- Implement `resolve_conflict(task_id, resolution)`: Handle `'local'`, `'external'`, `'skip'`
-- Implement `resolve_all_conflicts(resolution)`: Batch resolution using `_safe_save()`
+### Step 5: Sistema de Filtrado (task_manager.py, Parte 3)
 
-**Dependencies**: Step 5
+**Descripción:** Implementar método `filter(status=None, priority=None, search=None)` que retorne lista de tareas. `search` debe ser case-insensitive y buscar en `title` y `description`. Filtros son acumulativos (AND).
+
+**Dependencias:** Step 4
 
 ---
 
-### Step 7: Application Layer - Undo Operations
-**Description**: Implement undo functionality integrated with save system.
-- Implement `undo()`:
-  - Pop from undo stack, apply inverse operation
-  - `CREATE`: Remove task from list
-  - `UPDATE`: Restore task snapshot at original index
-  - `DELETE`: Reinsert task at `affected_index` (or append)
-  - Handle duplicate title on DELETE undo: rename to `"Title (restored #N)"`
-  - Save via `_safe_save()`
-- Implement `undo_status()`: Return dict with `available`, `count`, `remaining_slots`, `limit`
-- Warn user when undo limit is reached
+### Step 6: Sistema de Undo (task_manager.py, Parte 4)
 
-**Dependencies**: Step 5, Step 6
+**Descripción:** Implementar pila de comandos para undo. Cada operación (create/update/delete) guarda:
+- **create:** guardar tarea completa → undo la elimina
+- **update:** guardar estado anterior → undo restaura
+- **delete:** guardar tarea completa → undo la recrea
 
----
+Método `undo()` ejecuta el inverso del último comando. Lanzar `UndoError` si no hay operaciones.
 
-### Step 8: CLI - Core Interface
-**Description**: Build interactive command-line menu.
-- Create menu with options: Create, List, View, Update, Delete, Filter, Undo, Exit
-- Implement each operation with proper input prompting
-- Display tasks with status/priority icons (⏳🔄✅ / 🔵🟡🔴)
-- Handle all exceptions with user-friendly messages:
-  - `TaskValidationError`, `DuplicateTitleError`, `TaskNotFoundError`
-  - `UndoUnavailableError`, `TimeoutError`
-- Show `startup_warnings` on program launch
-- Implement pagination input: `[Enter=sin límite]`
+**Dependencias:** Step 4
 
-**Dependencies**: Step 7
+**Decisión:** Limitar historial a 50 operaciones para evitar consumo excesivo de memoria.
 
 ---
 
-### Step 9: CLI - Conflict Resolution Mode
-**Description**: Implement interactive conflict resolution in CLI.
-- On `ConflictError`:
-  - Display all conflicts with field differences
-  - Show resolution options: `resolve <id> local|external|skip`, `resolve-all`, `cancel`
-  - Implement interactive loop until all conflicts resolved or cancelled
-  - Reuse existing backup path from exception
-  - On cancel, inform user of backup location
-- Implement separate command `r` for manual conflict checking
-- On `BackupNotSavedError`: display backup path and recovery instructions
-- On `TimeoutError`: explain that another process may have the lock
+### Step 7: CLI Interactivo (cli.py)
 
-**Dependencies**: Step 8
+**Descripción:** Implementar menú con opciones numeradas:
+1. Crear tarea (pedir title, description, priority)
+2. Listar tareas (mostrar en tabla formateada)
+3. Ver tarea por ID
+4. Actualizar tarea (seleccionar campo a modificar)
+5. Eliminar tarea (confirmar)
+6. Filtrar tareas (submenú: status/priority/texto)
+7. Deshacer última operación
+8. Salir
 
----
+**Dependencias:** Step 5, Step 6
 
-### Step 10: Testing - Unit Tests
-**Description**: Create comprehensive pytest test suite.
-- Fixtures: `temp_file`, `manager`
-- Test classes:
-  - `TestCreate`: Basic creation, custom status/priority, empty title, duplicate title (case-insensitive), invalid status/priority, persistence
-  - `TestRead`: Get existing task, nonexistent task
-  - `TestUpdate`: Update title, partial updates, validation errors, nonexistent task
-  - `TestDelete`: Delete existing, nonexistent
-  - `TestFilters`: By status, by priority, by search (title/description), combined filters, no matches, case-insensitive search
-  - `TestUndo`: Create undo, update undo, delete undo, empty stack, multiple undos, order preservation
-  - `TestEdgeCases`: Whitespace trimming, empty database, updated_at changes, concurrent access, empty search normalization
-- Test `ConflictError` handling and resolution
-- Test `BackupNotSavedError` scenario
-- Note: `test_create_with_custom_status_priority` must use `Status.IN_PROGRESS`, NOT `Status.HIGH`
-
-**Dependencies**: All previous steps
+**Notas:** Manejar input vacío, Ctrl+C graceful, errores con mensajes legibles.
 
 ---
 
-### Step 11: Project Structure & Configuration
-**Description**: Organize files and configure project.
-- Create directory structure:
-  ```
-  task_manager/
-  ├── __init__.py
-  ├── models.py
-  ├── repository.py
-  ├── manager.py
-  ├── cli.py
-  ├── test_task_manager.py
-  └── tasks.json
-  ```
-- Add `__main__.py` for `python -m task_manager` execution
-- Create `requirements.txt`: `pytest`, `portalocker` (recommended for Windows)
-- Create `README.md` with usage instructions
-- Add `.gitignore` for `tasks.json` and `*.json.corrupted*`
-- Add type hints throughout for IDE support
+### Step 8: Punto de Entrada (main.py)
 
-**Dependencies**: Step 10
+**Descripción:** Script simple que ejecuta `run_cli()` desde `cli.py`.
+
+**Dependencias:** Step 7
 
 ---
 
-## Decisions
+### Step 9: Tests Unitarios (tests/test_task_manager.py)
 
-| Decision | Rationale |
-|----------|-----------|
-| Enums for Status/Priority | Type safety, IDE autocompletion, validation at parse time |
-| deepcopy for undo snapshots | Prevent accidental mutation of saved state |
-| UndoStack max_size=50 | Balance between memory usage and undo capability |
-| File locking priority: portalocker → fcntl → msvcrt → noop | Robustness across platforms; portalocker is cross-platform, fcntl is Unix-standard, msvcrt is limited fallback |
-| Atomic writes with os.replace() | `os.replace()` is atomic on all platforms (Python 3.3+) |
-| ConflictError with manual resolution | User data should never be silently overwritten |
-| Backup to temp directory | Guarantees write access, separates from working directory |
-| Length limits: 200/5000 chars | Reasonable limits to prevent UI/performance issues |
-| Retry count=2 default | Quick failover for transient conflicts, user intervention for persistent ones |
+**Descripción:** Suite completa con pytest cubriendo:
+- **Edge cases de validación:**
+  - Crear tarea con título vacío → debe lanzar ValidationError
+  - Crear tarea con título duplicado → debe lanzar DuplicateError
+  - Update con status inválido → debe lanzar ValidationError
+  - Delete de tarea inexistente → debe lanzar NotFoundError
+- **Edge cases de undo:**
+  - Undo sin operaciones previas → debe lanzar UndoError
+  - Undo de delete → debe restaurar tarea completa
+  - Undo multiple (create + delete)
+- **Filtros combinados:**
+  - Filtrar por status Y priority
+  - Filtrar por status Y texto
+  - Filtrar por texto que matchea solo description
+  - Filtro sin resultados
+- **Persistencia:**
+  - Datos persisten entre instancias de TaskManager
+
+**Dependencias:** Step 8 (puede crearse en paralelo, no depende de ejecución)
+
+**Decisión:** Usar fixtures de pytest con tmp_path para crear archivos JSON temporales por test.
+
+---
+
+### Step 10: README y documentación
+
+**Descripción:** Documentar uso del CLI, estructura del proyecto, y cómo ejecutar tests.
+
+**Dependencias:** Step 9
 
 ## Risks
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| JSON corruption on disk | Data loss | Auto-backup to `.json.corrupted`, graceful fallback to empty list |
-| Concurrent file access | Data loss / corruption | File locking with timeout, conflict detection, merge for non-conflicting changes |
-| msvcrt fallback limited locking | Race condition on Windows | Document limitation, recommend `pip install portalocker`, detect and warn |
-| Undo stack overflow | Lost undo history | Warn user when limit reached, clear stack on conflict errors |
-| Duplicate title after undo | Undo fails silently | Auto-rename to `"Title (restored #N)"` pattern |
-| Memory with large task lists | Performance degradation | Pagination with limit/offset, no forced loading of all tasks |
+| Riesgo | Probabilidad | Impacto | Mitigación |
+|--------|--------------|---------|------------|
+| Corrupción del archivo JSON por escritura concurrente | Baja | Alto | Escritura atómica con archivo temporal |
+| Memoria excesiva por historial de undo | Baja | Medio | Limitar a 50 comandos |
+| Input malicioso en CLI (inyección, bytes nulos) | Baja | Medio | Sanitizar input, usar .strip() |
+| Tests lentos por I/O en cada test | Media | Bajo | Usar tmp_path, mock de storage si necesario |
 
 ## Timeline
 
-| Phase | Steps | Complexity |
-|-------|-------|------------|
-| Core Implementation | 1-5 | Medium |
-| Robustness Features | 6-7 | High |
-| CLI & UX | 8-9 | Medium |
-| Testing & Polish | 10-11 | Low |
+Estimación total: **~8-10 horas** para desarrollador intermedio
 
-**Estimated Total**: ~400 lines of core code + ~300 lines of tests + ~200 lines of CLI
+| Step | Horas estimadas |
+|------|-----------------|
+| 1. Modelo de datos | 0.5 |
+| 2. Persistencia | 1 |
+| 3. CRUD básico | 1.5 |
+| 4. Validación | 1 |
+| 5. Filtrado | 1 |
+| 6. Undo | 1.5 |
+| 7. CLI | 1.5 |
+| 8. main.py | 0.25 |
+| 9. Tests | 2 |
+| 10. README | 0.5 |
+| **Total** | **~10.75** |
