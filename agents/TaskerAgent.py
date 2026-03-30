@@ -25,6 +25,10 @@ TASK_TREE_SCHEMA = {
                         "model": {
                             "type": "string",
                             "enum": ["light", "medium", "heavy"]
+                        },
+                        "phase": {
+                            "type": "string",
+                            "enum": ["build", "wire"]
                         }
                     },
                     "required": ["id", "title", "description", "model"]
@@ -60,7 +64,14 @@ class TaskerAgent(BaseAgent):
                 - Every subtask description must start with "In {{file_path}}:"
                 - Include method signatures from the Blueprint in descriptions
                 - Include business context from the Plan in descriptions
+                - Include the export statement from the Blueprint in build task descriptions
                 - Do NOT create groups for empty __init__.py files
+                - Every subtask MUST have a "phase" field: "build" or "wire"
+                - Entry point files and IPC/API bridge files MUST have a wire task as last subtask
+                - Files with 3+ imports SHOULD have a wire task
+                - If Blueprint has CONVENTIONS, reference export/import style in wire tasks
+                - If Blueprint has INTEGRATION CONTRACTS, reference them in wire tasks  
+                - If Blueprint has CONSTRUCTOR REGISTRY, include it in entry point wire tasks
                 
                 Return ONLY a valid JSON array of groups.
             """
@@ -78,7 +89,10 @@ class TaskerAgent(BaseAgent):
                 - Every subtask description must start with "In {{file_path}}:"
                 - Include method signatures from the Blueprint in descriptions
                 - Use the Blueprint's purpose and notes fields for context in descriptions
+                - Include the export statement from the Blueprint in build task descriptions
                 - Do NOT create groups for empty __init__.py files
+                - Every subtask MUST have a "phase" field: "build" or "wire"
+                - Entry point files and IPC/API bridge files MUST have a wire task
                 
                 Return ONLY a valid JSON array of groups.
             """
@@ -94,7 +108,6 @@ class TaskerAgent(BaseAgent):
     # --- Validation ---
 
     def validate(self, task_tree):
-        # """Validate the task tree structure and return issues list."""
         try:
             groups = json.loads(task_tree) if isinstance(task_tree, str) else task_tree
         except json.JSONDecodeError as e:
@@ -122,6 +135,9 @@ class TaskerAgent(BaseAgent):
             if not subtasks:
                 issues.append(f"Group {gid}: has no subtasks")
 
+            has_wire = False
+            build_after_wire = False
+
             for st in subtasks:
                 sid = st.get("id", "?")
 
@@ -142,6 +158,23 @@ class TaskerAgent(BaseAgent):
                 if st.get("model") not in ("light", "medium", "heavy"):
                     issues.append(f"Subtask {sid}: invalid model '{st.get('model')}'")
 
+                # Default phase to "build" if missing
+                if "phase" not in st:
+                    st["phase"] = "build"
+
+                # Check phase is valid
+                if st.get("phase") not in ("build", "wire"):
+                    issues.append(f"Subtask {sid}: invalid phase '{st.get('phase')}'")
+
+                # Check build tasks don't come after wire tasks
+                if st.get("phase") == "wire":
+                    has_wire = True
+                elif has_wire:
+                    build_after_wire = True
+
+            if build_after_wire:
+                issues.append(f"Group {gid}: build subtasks found after wire subtasks — wire must be last")
+
         # Check for circular dependencies between groups
         if self._has_group_cycle(groups):
             issues.append("Circular dependency detected between groups")
@@ -149,7 +182,6 @@ class TaskerAgent(BaseAgent):
         return groups, issues
 
     def _has_group_cycle(self, groups):
-        # """Detect cycles in group dependency graph using DFS."""
         graph = {g["id"]: g.get("depends_on", []) for g in groups}
         visited = set()
         rec_stack = set()
@@ -175,30 +207,39 @@ class TaskerAgent(BaseAgent):
     # --- Flatten for execution ---
 
     def flatten(self, task_tree):
-        # """Flatten tree into ordered list of subtasks for the Executor.
-        # Groups are topologically sorted by depends_on, subtasks within a group are sequential."""
+        """Flatten tree into ordered list of subtasks for the Executor.
+        
+        Ordering: ALL build tasks first (topo-sorted by group), then ALL wire tasks 
+        (topo-sorted by group). This ensures wire tasks see the actual code from all 
+        build tasks, not just their own group.
+        """
         groups = json.loads(task_tree) if isinstance(task_tree, str) else task_tree
-
-        # Topological sort of groups
         sorted_groups = self._topo_sort(groups)
 
-        flat_tasks = []
+        build_tasks = []
+        wire_tasks = []
+
         for group in sorted_groups:
             for subtask in group.get("subtasks", []):
-                flat_tasks.append({
+                task_entry = {
                     "id": subtask["id"],
                     "title": subtask["title"],
                     "description": subtask["description"],
                     "model": subtask["model"],
+                    "phase": subtask.get("phase", "build"),
                     "file": group["file"],
                     "group_id": group["id"],
                     "group_title": group["title"]
-                })
+                }
 
-        return flat_tasks
+                if subtask.get("phase") == "wire":
+                    wire_tasks.append(task_entry)
+                else:
+                    build_tasks.append(task_entry)
+
+        return build_tasks + wire_tasks
 
     def _topo_sort(self, groups):
-        # """Topological sort of groups by depends_on."""
         group_map = {g["id"]: g for g in groups}
         visited = set()
         result = []

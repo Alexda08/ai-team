@@ -98,14 +98,43 @@ class ArchitectAgent(BaseAgent):
             4. What each file imports from other project files
             5. The safe implementation order (dependency-free files first)
 
-            CRITICAL REQUIREMENTS:
-            - Every method must have a complete signature: name(param: type, param: type) -> return_type
-            - Every method must be marked [NEW] (does not exist yet) or [MODIFY] (exists and needs changes)
-            - Every file must have a complexity hint: SIMPLE, STANDARD, or COMPLEX
-            - Dependencies between files must be explicit import statements
-            - The DEPENDENCY ORDER at the end must allow sequential implementation with no blocking
+            MANDATORY SECTIONS (your system prompt has the full format):
 
-            Do NOT skip any feature from the plan. Every step in the plan must map to at least one file in the Blueprint.
+            1. CONVENTIONS — Language-specific rules that ALL coders must follow:
+               - Export/import style (pick ONE convention, enforce everywhere)
+               - Constructor naming (constructor for JS, __init__ for Python)
+               - Async pattern, string quotes, semicolons, file naming
+               - Use the TARGET LANGUAGE idioms, not Python idioms in JS or vice versa
+
+            2. INTEGRATION CONTRACTS — If the project has IPC, API routes, events, or any cross-file communication:
+               - Define EVERY channel/route/event name as an exact string
+               - Create a shared constants file that both sender and receiver import
+               - NEVER allow hardcoded strings in multiple files
+               
+            3. CONSTRUCTOR REGISTRY — For the entry point file:
+               - List EVERY class instantiation in dependency order
+               - Show exact constructor parameters
+               - This is the wiring diagram — the entry point coder copies this verbatim
+
+            4. FILES — Each file must include:
+               - exports: the EXACT export statement (e.g. "module.exports = {{ ClassName }}")
+               - Constructor signature with exact parameters
+               - All method signatures
+
+            5. INTEGRATION TASKS — List what needs dedicated integration tasks:
+               - Entry point wiring
+               - IPC/API channel unification
+               - Cross-module contract verification
+
+            CRITICAL REQUIREMENTS:
+            - Every CONSTRUCTOR must list its exact parameters — this is the most important signature
+            - Every method must have a complete signature: name(param: type, param: type) -> return_type
+            - Every method must be marked [NEW] or [MODIFY]
+            - Every file must have a complexity hint and an exports line
+            - Dependencies between files must be explicit import statements with exact syntax
+            - The DEPENDENCY ORDER must allow sequential implementation with no blocking
+
+            Do NOT skip any feature from the plan. Every step in the plan must map to at least one file.
             Do NOT write implementation code — only structure and signatures.
 
             Produce the full PROJECT BLUEPRINT now.

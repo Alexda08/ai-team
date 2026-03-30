@@ -1,164 +1,159 @@
 # Project Plan
 
 ## Objective
+Build a single-page web application for real-time work activity tracking with minimal friction, allowing users to record start/end times, project assignments, and descriptions, then export to CSV for manual entry into corporate systems.
 
-Desarrollar un sistema CLI de reservas de biblioteca en Python que permita a los usuarios registrarse, buscar libros por título/autor, reservar libros (máximo 3 activos), devolver libros, y ver su historial de reservas. Persistencia en archivos JSON con tolerancia a fallos.
+## Context
+- **Framework**: SvelteKit (all-in-one: frontend + API + SSR)
+- **Database**: SQLite via Prisma ORM
+- **Deployment**: Single folder on local server/VPS
+- **Constraints**: Single device, no authentication, no offline support, manual CSV export only
 
 ## Architecture
 
 ```
-biblioteca/
-├── biblioteca.py      # Menú CLI, orquestación de flujo
-├── models.py          # Dataclasses: Usuario, Libro, Reserva
-├── repository.py      # Lectura/escritura JSON con escritura atómica
-├── services.py        # Lógica de negocio y validaciones
-├── main.py            # Entry point
-└── data/
-    ├── usuarios.json  # Array de usuarios
-    ├── libros.json    # Array de libros (precargado con 10 de prueba)
-    └── reservas.json  # Array de reservas
+timetracker/
+├── src/
+│   ├── routes/
+│   │   ├── +page.svelte           # Single page: timer + history + filters
+│   │   ├── +layout.svelte         # Shell + tab lock logic
+│   │   ├── +server.ts             # Prerender disabled
+│   │   └── api/
+│   │       ├── activities/
+│   │       │   ├── +server.ts      # GET (list), POST (create)
+│   │       │   └── [id]/+server.ts # PATCH (update), DELETE
+│   │       └── projects/
+│   │           ├── +server.ts      # GET (list), POST (create)
+│   │           └── [id]/+server.ts  # PATCH (update), DELETE
+│   └── lib/
+│       ├── db.server.ts           # Prisma singleton
+│       ├── stores.ts              # Reactive state (active activity, filters)
+│       └── utils.ts               # Date formatting, CSV generation
+├── prisma/
+│   └── schema.prisma              # Project + Activity models
+├── data/
+│   └── timetracker.db             # SQLite file (gitignored)
+└── package.json
 ```
 
 ## Modules
 
-### models.py
-Dataclasses inmutables con los campos:
-- **Usuario**: id (str), nombre (str), email (str), password (str)
-- **Libro**: id (str), titulo (str), autor (str), isbn (str), reservado_por (str | None)
-- **Reserva**: id (str), usuario_id (str), libro_id (str), fecha_reserva (str ISO 8601), fecha_devolucion (str | None)
-
-### repository.py
-- `cargar<T>(archivo)` → lista de objetos del tipo
-- `guardar<T>(archivo, datos)` → escritura atómica a .tmp + rename
-- `generar_id()` → `uuid.uuid4().hex[:8]`
-- Auto-creación de archivos con `[]` si no existen al iniciar
-
-### services.py
-- `registrar_usuario(nombre, email, password)` → valida email único, min 4 chars password
-- `autenticar(email, password)` → retorna Usuario o None
-- `buscar_libros(termino)` → filtro case-insensitive en titulo y autor; "" → todos
-- `reservar_libro(libro_id, usuario_id)` → valida disponible, max 3 activas, crea Reserva
-- `devolver_libro(libro_id, usuario_id)` → valida propiedad, actualiza Reserva y Libro
-- `obtener_historial(usuario_id)` → lista de Reservas ordenadas por fecha_reserva DESC
-- `contar_reservas_activas(usuario_id)` → count donde fecha_devolucion is None
-
-### biblioteca.py
-- Variable `usuario_actual` en memoria (None o Usuario)
-- Dos menús: público (sin sesión) y autenticado (con sesión)
-- Manejo de input con reintentos para opciones inválidas
-- Pausa post-acción exitosa (excepto login)
+| Module | Responsibility |
+|--------|----------------|
+| `db.server.ts` | Prisma client singleton, server-only |
+| `stores.ts` | Svelte stores for active activity, filters, projects list |
+| `utils.ts` | Date formatting (UTC→local), CSV generation with BOM |
+| `api/activities/` | CRUD for activities (start, stop, edit, delete) |
+| `api/projects/` | CRUD for projects (create, edit, delete) |
+| `+page.svelte` | Timer controls, activity list, filters, modals |
+| `+layout.svelte` | Tab lock via BroadcastChannel, global state |
 
 ## Implementation Steps
 
-### Step 1: Estructura base y modelos
-**Descripción**: Crear estructura de carpetas, archivos JSON iniciales con datos de prueba, y dataclasses en models.py.
-**Dependencias**: Ninguna
+### Step 1
+**Title**: Project scaffolding
+**Description**: Initialize SvelteKit project, install dependencies (Prisma, better-sqlite3), configure TypeScript and SvelteKit defaults.
+**Dependencies**: None
 
-- Crear directorio `biblioteca/data/`
-- Crear `data/libros.json` con 10 libros de prueba (IDs pre-generados: a1b2c3d4, e5f6g7h8, i9j0k1l2, m3n4o5p6, q7r8s9t0, u1v2w3x4, y5z6a7b8, c9d0e1f2, g3h4i5j6, k7l8m9n0)
-- Crear `data/usuarios.json` = `[]`
-- Crear `data/reservas.json` = `[]`
-- Implementar dataclasses en models.py
+### Step 2
+**Title**: Database schema definition
+**Description**: Define Prisma schema with `Project` (id, name, color, createdAt) and `Activity` (id, projectId, description, startedAt, endedAt, createdAt). Add relations.
+**Dependencies**: 1
 
-### Step 2: Repository
-**Descripción**: Implementar capa de persistencia con escritura atómica y auto-creación de archivos.
-**Dependencias**: Step 1
+### Step 3
+**Title**: Database initialization
+**Description**: Run `prisma db push` to create SQLite file and tables. Add `data/` to .gitignore. Create `db.server.ts` with Prisma client singleton pattern (avoid multiple instances).
+**Dependencies**: 2
 
-- Implementar `cargar` con manejo de archivos faltantes (crear si no existe) y fechas malformadas (ignorar, log warning)
-- Implementar `guardar` con patrón: escribir a `.tmp`, flush, fsync, rename
-- Implementar `generar_id` con UUID v4 (8 hex caracteres)
+### Step 4
+**Title**: Projects API endpoints
+**Description**: Implement `GET /api/projects` (list all), `POST /api/projects` (create), `PATCH /api/projects/[id]` (update name/color), `DELETE /api/projects/[id]` (delete with cascade warning in response).
+**Dependencies**: 3
 
-### Step 3: Services
-**Descripción**: Implementar toda la lógica de negocio y validaciones.
-**Dependencias**: Step 1, Step 2
+### Step 5
+**Title**: Activities API endpoints
+**Description**: Implement `GET /api/activities` (list with optional filters: date, projectId), `POST /api/activities` (create with startedAt, validate endedAt not before startedAt), `PATCH /api/activities/[id]` (update fields, validate time logic), `DELETE /api/activities/[id]`.
+**Dependencies**: 3
 
-- `registrar_usuario`: validar nombre no vacío, email con formato válido (char@char.char), password mínimo 4 caracteres, email único
-- `autenticar`: buscar por email y password, retornar usuario o None
-- `buscar_libros`: filtro case-insensitive en titulo y autor; "" retorna todos
-- `reservar_libro`: verificar libro existe, no reservado, usuario tiene <3 activas → crear reserva, actualizar libro.reservado_por
-- `devolver_libro`: verificar libro existe, reservado_por == usuario_id → actualizar reserva.fecha_devolucion, libro.reservado_por = None
-- `obtener_historial`: obtener todas reservas del usuario, ordenar por fecha_reserva DESC
+### Step 6
+**Title**: Client-side stores
+**Description**: Create Svelte stores: `activeActivity` (current activity with startedAt, or null), `activities` (filtered list), `projects` (all projects), `filters` (date, projectId). Include derived store `activeActivityDuration` that recalculates elapsed time.
+**Dependencies**: 3
 
-### Step 4: CLI - Menú Público
-**Descripción**: Implementar flujo de autenticación y navegación sin sesión.
-**Dependencias**: Step 2, Step 3
+### Step 7
+**Title**: Tab lock mechanism
+**Description**: Implement BroadcastChannel in `+layout.svelte` onMount. Send HEARTBEAT every 2s. If another tab's HEARTBEAT detected, set `tabLocked = true` and show modal blocking UI. Store own `tabId` in module-level variable.
+**Dependencies**: 6
 
-Menú público:
-1. Registrarse → solicitar nombre, email, password con validación inline
-2. Iniciar sesión → solicitar email, password → establecer usuario_actual
-3. Ver libros disponibles → mostrar todos con estado (disponible/reservado por X)
-4. Salir
+### Step 8
+**Title**: Core UI — Header with timer controls
+**Description**: Build header section: project dropdown (fetched from store), description text input (max 500 chars), main action button (▶ green "Iniciar" or ⏹ red "Detener"), and secondary "✕ Fin manual" button visible only when activity active.
+**Dependencies**: 6, 7
 
-- Validar input de opción (número fuera de rango, letras) → "Opción no válida", reprint
-- Login exitoso → mostrar "Bienvenido, {nombre}" y transicionar a menú autenticado
+### Step 9
+**Title**: Timer real-time update
+**Description**: Implement `setInterval` (1s) in client that recalculates duration from `activeActivity.startedAt` to now. Display format: `HH:MM:SS`. Clear interval on destroy or when activity stopped.
+**Dependencies**: 8
 
-### Step 5: CLI - Menú Autenticado
-**Descripción**: Implementar operaciones por usuario.
-**Dependencias**: Step 2, Step 3, Step 4
+### Step 10
+**Title**: Activity history list
+**Description**: Render chronological list (newest first) below timer. Each row shows: started time, ended time (or "—" if active), duration (calculated), project color dot, project name, description (or "—" if empty). Click opens edit modal.
+**Dependencies**: 6, 9
 
-Menú autenticado:
-1. Buscar libros → término → mostrar resultados numerados → seleccionar por número (0=cancelar) → reservar
-2. Reservar libro → solicitar ID o usar selección tras búsqueda
-3. Devolver libro → solicitar ID de libro → validar y devolver
-4. Mi historial → mostrar tabla ASCII con todas las reservas (fecha_reserva, fecha_devolucion, título, estado)
-5. Cerrar sesión → usuario_actual = None, volver a menú público
-6. Salir → terminar programa
+### Step 11
+**Title**: Filter bar and date navigation
+**Description**: Build filter section: left/right arrows for day navigation, centered date display (click opens date picker), project dropdown filter, "Limpiar" button. Sync filter state to URL params for shareability.
+**Dependencies**: 6
 
-- Tras acción exitosa (excepto login) → pausa "Presiona ENTER para continuar..."
-- Mensajes de error específicos para cada caso de fallo
+### Step 12
+**Title**: Activity edit/delete modal
+**Description**: Modal on activity click: editable fields (project, description, startedAt datetime-local, endedAt datetime-local). Save triggers PATCH. Add trash icon on hover for delete with confirmation dialog.
+**Dependencies**: 10, 11
 
-### Step 6: Main y pruebas manuales
-**Descripción**: Entry point y verificación del sistema completo.
-**Dependencias**: Todos los anteriores
+### Step 13
+**Title**: Project CRUD modal
+**Description**: Modal accessible from header: create/edit/delete projects. Form fields: name (required), color picker (6 preset colors). Delete shows count of associated activities and requires explicit confirmation with red "Borrar todo" button.
+**Dependencies**: 4
 
-- Implementar main.py que inicialice y ejecute el CLI
-- Verificar flujo completo: registro → login → búsqueda → reserva → devolución → historial
-- Verificar casos de error: libro reservado, límite 3, email duplicado, etc.
+### Step 14
+**Title**: CSV export functionality
+**Description**: Implement export button that generates CSV with columns: `started_at,ended_at,duration_minutes,project,project_color,description`. Use UTF-8 BOM for Excel compatibility. Timestamps in ISO 8601 with offset. Download triggers automatically.
+**Dependencies**: 11
 
-## Decisions
+### Step 15
+**Title**: Input validation and edge cases
+**Description**: Add client-side validation: warn if endedAt < startedAt (prevent save), truncate description > 500 chars with toast warning, warn if endedAt is in future, block startedAt > now. Show inline error messages.
+**Dependencies**: 12
 
-| Decisión | Justificación |
-|----------|---------------|
-| UUID v4 para IDs | Unicos sin contadores, idempotentes entre ejecuciones |
-| Sesión en memoria | CLI simple, no requiere persistencia de sesión |
-| Escritura atómica (.tmp + rename) | Evita corrupción si proceso se interrumpe a mitad de escritura |
-| ASCII only en output | Compatibilidad total con cualquier terminal |
-| Búsqueda vacía retorna todos | Comportamiento esperado de filtro "ver todo" |
-| Sin baja de usuario | No estaba en requisitos originales |
-| Sin validación DNS de email | Scope simple, no requiere complejidad adicional |
-| ISBNs ficticios en datos de prueba | No se usa para funcionalidad, solo estética |
+### Step 16
+**Title**: Resume active activity on page load
+**Description**: On app load, fetch activities and check for any with endedAt = null. If found, set as activeActivity. Recalculate elapsed time from stored startedAt. Show activity as "en curso" immediately.
+**Dependencies**: 6, 9
+
+### Step 17
+**Title**: Deployment configuration
+**Description**: Add `adapter-node` for server deployment. Create start script. Document SQLite file location (`./data/timetracker.db`). Add README with backup instructions (manual file copy or periodic CSV export).
+**Dependencies**: 1-16
 
 ## Risks
 
-| Riesgo | Impacto | Mitigación |
-|--------|---------|------------|
-| JSON corrupto por escritura incompleta | Pérdida de datos | Escritura atómica con fsync garantiza integridad |
-| Concurrencia de acceso a archivos | Datos inconsistentes | No aplica: CLI mono-usuario, un proceso a la vez |
-| Terminal sin soporte ASCII extendido | Caracteres rotados | Output usa solo ASCII puro (letras, números, símbolos básicos) |
-| Datos de fecha malformados en JSON | Entradas corruptas ignoradas | Log warning, sistema continúa funcionando |
-| Límite de archivos abiertos (SO) | Error de persistencia | Cerrar archivos inmediatamente tras lectura/escritura |
+| Risk | Mitigation |
+|------|------------|
+| SQLite file corruption or loss | Document manual backup process; CSV export is functional backup |
+| Timer drift (client time manipulation) | Server only trusts startedAt from server on creation; display is cosmetic |
+| Browser crash during activity | Activity persists in DB without endedAt; resumes on reload (Step 16) |
+| Multiple developers misunderstanding "simple" | Enforce single-activity constraint; clear error if user tries to start while one active |
+| Timezone confusion for remote users | Store UTC, display local, export with offset; document behavior clearly |
 
 ## Timeline
 
-**Estimación total**: 4-6 horas de desarrollo
-
-- Step 1 (estructura): 30 min
-- Step 2 (repository): 1 hora
-- Step 3 (services): 1.5 horas
-- Step 4 (menú público): 1 hora
-- Step 5 (menú autenticado): 1.5 horas
-- Step 6 (integración y pruebas): 1 hora
-
-## Expected Outcome
-
-Sistema funcional que permite:
-- ✓ Registro con validación de email único
-- ✓ Login/logout con sesión en memoria
-- ✓ Búsqueda case-insensitive por título/autor
-- ✓ Reserva con validación de disponibilidad y límite de 3 activas
-- ✓ Devolución con validación de propiedad
-- ✓ Historial ordenado por fecha
-- ✓ Persistencia JSON con tolerancia a fallos
-- ✓ Output compatible con cualquier terminal
-
-El sistema puede ser ejecutado con `python main.py` y funciona sin dependencias externas (solo stdlib de Python).
+| Phase | Steps | Estimated Effort |
+|-------|-------|------------------|
+| Foundation | 1-3 | 1-2 hours |
+| Backend APIs | 4-5 | 2-3 hours |
+| State & Core UI | 6-9 | 3-4 hours |
+| History & Filters | 10-12 | 2-3 hours |
+| Projects & Export | 13-14 | 2 hours |
+| Polish & Edge Cases | 15-16 | 2 hours |
+| Deployment | 17 | 1 hour |
+| **Total** | | **13-17 hours** |

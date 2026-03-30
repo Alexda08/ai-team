@@ -11,6 +11,7 @@ class AgentRuntime:
         self.max_turns = max_turns
         self.state = {
             "phase": "ideation",
+            "ideation": RuntimeHelper.get_ideation(),
             "plan": RuntimeHelper.get_plan(),
             "blueprint": RuntimeHelper.get_blueprint(),
             "tasks": RuntimeHelper.get_tasks(),
@@ -51,6 +52,8 @@ class AgentRuntime:
             self.state["phase"] = "failed"
             return
 
+        self.state["ideation"] = self.message_bus.history()
+        Utils.save_text("output/ideation.md",  json.dumps(self.message_bus.history(), indent=2))
         self.state["phase"] = "planning"
 
     def run_planning(self):
@@ -59,11 +62,16 @@ class AgentRuntime:
         architect = self.agents["Architect"]
         turn = 0
 
-        plan = thinker.generate_plan(self.message_bus.history())
+        if not (ideation := self.state["ideation"]):
+            print("\n[WARN] Can't generate plan without ideation. Returning to ideation phase.")
+            self.state["phase"] = "ideation"
+            return
+
+        plan = thinker.generate_plan(ideation)
         print("\nPlan generated. architect reviewing...\n")
 
         review = architect.review_plan(plan)
-        while review["status"] != "VIABLE" and turn < self.max_turns:
+        while review["status"] != "VIABLE" and turn < self.max_turns and turn >= 1:
             plan = thinker.generate_plan(plan, feedback=review)
             review = architect.review_plan(plan)
             print(f"  [REWORK] Round {review["status"]} | Unclear: {review['criteria']['required']}")
@@ -78,6 +86,7 @@ class AgentRuntime:
         Utils.save_text("output/plan.md", plan)
         self.state["plan"] = plan
 
+        print("\n[ARCHITECT] Generating blueprint...")
         blueprint = architect.generate_bluePrint(plan)
         self.state["blueprint"] = blueprint
         Utils.save_text("output/blueprint.md", blueprint)
@@ -97,7 +106,7 @@ class AgentRuntime:
             print(f"\n[ERROR] Tasking failed: {issues}")
             self.state["phase"] = "failed"
             return
- 
+
         if issues:
             print(f"  [VALIDATE] {len(issues)} issues found:")
             for issue in issues[:10]:
@@ -105,7 +114,7 @@ class AgentRuntime:
 
         # Save tree structure
         Utils.save_text("output/tasks_tree.json", json.dumps(task_tree, indent=2))
- 
+
         # Flatten for execution
         if not (flat_tasks := tasker.flatten(task_tree)):
             print("\n[ERROR] Tasking produced no tasks. Stopping pipeline.")
@@ -149,7 +158,10 @@ class AgentRuntime:
                 self.state["phase"] = "failed"
                 Utils.save_text("output/completed_tasks.json", json.dumps(self.state["completed_tasks"], indent=2))
                 return
-        
+
+        # saving this bc it's here all tasks are done
+        Utils.save_text("output/completed_tasks.json", json.dumps(self.state["completed_tasks"], indent=2))
+
         print("\n  Running final project validation...")
         final_validation = executor.run_final_validation(validator, self.state["tasks"], self.state["completed_tasks"])
 

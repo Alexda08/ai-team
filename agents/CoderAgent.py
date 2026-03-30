@@ -1,6 +1,6 @@
 import json, platform, os
 from agents.base_agent import BaseAgent
-from common.tools import read_file, read_file_lines, file_summary, list_files, smart_edit, delete_file, run_command
+from common.tools import create_file, read_context, smart_edit
 from common.utils import Utils
 
 OS_INFO = platform.system()
@@ -15,16 +15,13 @@ CODE_TASK_SCHEMA = {
                 "properties": {
                     "tool": {
                         "type": "string",
-                        "enum": ["read_file", "read_file_lines", "file_summary", "list_files", "smart_edit", "delete_file", "run_command"]
+                        "enum": ["create_file", "read_context", "smart_edit"]
                     },
                     "action": {"type": "string"},
                     "target": {"type": "string"},
                     "class_name": {"type": "string"},
                     "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "command": {"type": "string"},
-                    "start": {"type": "integer"},
-                    "end": {"type": "integer"}
+                    "content": {"type": "string"}
                 },
                 "required": ["tool"]
             }
@@ -49,7 +46,12 @@ class CoderAgent(BaseAgent):
 
         file_block = ""
         if file_context:
-            file_block = f"\n{file_context}\nUse EXACT method names and signatures shown above. Do NOT invent methods that don't exist. Do NOT call file_summary — you already have all file states."
+            file_block = (
+                f"\n{file_context}\n"
+                f"You already have all file contents above. "
+                f"Go DIRECTLY to smart_edit or create_file. "
+                f"Do NOT use read_context — the context is already provided."
+            )
 
         sibling_block = ""
         if sibling_context:
@@ -60,9 +62,9 @@ class CoderAgent(BaseAgent):
             feedback_block = f"\nPREVIOUS ATTEMPT FAILED:\n{retry_feedback}\nFix this issue."
 
         base_prompt = f"""
-            {context_block}
             {file_block}
             {sibling_block}
+            {context_block}
 
             TASK:
             Title: {task["title"]}
@@ -118,55 +120,52 @@ class CoderAgent(BaseAgent):
                 continue
 
             # Validate path for tools that need it
-            if tool in ("read_file", "read_file_lines", "file_summary", "list_files", "smart_edit", "delete_file"):
+            if tool in ("create_file", "read_context", "smart_edit"):
                 if not path:
                     results.append({"tool": tool, "result": {"success": False, "error": "Missing path"}})
                     print(f"  [SKIPPED] {tool}: missing path")
                     continue
-            elif tool == "run_command":
-                if not action.get("command"):
-                    results.append({"tool": tool, "result": {"success": False, "error": "Missing command"}})
-                    print(f"  [SKIPPED] {tool}: missing command")
-                    continue
 
             # Dispatch
-            if tool == "read_file":
-                result = read_file(path, workspace_path)
-            elif tool == "read_file_lines":
-                result = read_file_lines(path, action.get("start", 1), action.get("end", 50), workspace_path)
-            elif tool == "file_summary":
-                result = file_summary(path, workspace_path)
-            elif tool == "list_files":
-                result = list_files(path, workspace_path)
-            elif tool == "smart_edit":
-                result = smart_edit(
+            if tool == "create_file":
+                result = create_file(
                     path,
-                    action.get("action", "create"),
                     action.get("content", ""),
-                    target=action.get("target"),
-                    class_name=action.get("class_name"),
                     workspace_path=workspace_path
                 )
-            elif tool == "delete_file":
-                result = delete_file(path, workspace_path)
-            elif tool == "run_command":
-                result = run_command(action["command"], workspace_path)
+            elif tool == "read_context":
+                result = read_context(path, workspace_path=workspace_path)
+            elif tool == "smart_edit":
+                edit_action = action.get("action", "add_function")
+                # Intercept create action — redirect to create_file
+                if edit_action == "create":
+                    result = create_file(path, action.get("content", ""), workspace_path=workspace_path)
+                else:
+                    result = smart_edit(
+                        path,
+                        edit_action,
+                        action.get("content", ""),
+                        target=action.get("target"),
+                        class_name=action.get("class_name"),
+                        workspace_path=workspace_path
+                    )
             else:
-                result = {"success": False, "error": f"Unknown tool: {tool}"}
+                result = {"success": False, "error": f"Unknown tool: {tool}. Available: create_file, read_context, smart_edit"}
 
             results.append({"tool": tool, "result": result})
 
-            if not result["success"]:
-                if tool in ("read_file", "read_file_lines", "file_summary", "list_files"):
-                    print(f"  [WARN] {tool}: {result['error']} (non-fatal)")
+            if not result.get("success"):
+                if tool == "read_context":
+                    print(f"  [WARN] {tool}: {result.get('error', 'unknown')} (non-fatal)")
                 else:
-                    print(f"  [FAILED] {tool}: {result['error']}")
+                    print(f"  [FAILED] {tool}: {result.get('error', 'unknown')}")
             else:
-                print(f"  [OK] {tool}: {action.get('path') or action.get('command')}")
+                print(f"  [OK] {tool}: {path}")
 
-        critical_results = [r for r in results if r["tool"] not in ("read_file", "read_file_lines", "file_summary", "list_files")]
+        # Success = at least one write operation succeeded
+        write_results = [r for r in results if r["tool"] in ("create_file", "smart_edit")]
         return {
             "summary": plan.get("summary", ""),
             "results": results,
-            "success": len(critical_results) > 0 and all(r["result"]["success"] for r in critical_results)
+            "success": len(write_results) > 0 and all(r["result"]["success"] for r in write_results)
         }

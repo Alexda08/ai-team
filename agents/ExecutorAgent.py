@@ -1,8 +1,9 @@
-import os, json, shutil
+import os, json, shutil, tempfile
 from agents.base_agent import BaseAgent
 from agents.CoderAgent import CoderAgent
 from agents.ValidatorAgent import ValidatorAgent
 from common.utils import Utils
+from common.tools import file_summary, list_files, read_file
 from runtime.message_bus import MessageBus
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,8 +98,26 @@ class ExecutorAgent(BaseAgent):
                     error_text = "; ".join(failed_errors)
 
                     if "not found" in error_text.lower():
+                        # Sacar el path del primer smart_edit fallido
+                        target_file = ""
+                        for r in res_coder.get("results", []):
+                            if r.get("tool") == "smart_edit" and not r.get("result", {}).get("success"):
+                                # El path está en el error message o en el result
+                                err = r["result"].get("error", "")
+                                import re
+                                path_match = re.search(r"in (.+)$", err)
+                                if path_match:
+                                    target_file = path_match.group(1)
+                                    break
+
+                        existing = ""
+                        if target_file:
+                            summary = file_summary(target_file, WORKSPACE_PATH)
+                            if summary.get("success"):
+                                s = summary["summary"]
+                                existing = f" Existing classes: {[c['name'] for c in s.get('classes', [])]}. Existing functions: {[f['name'] for f in s.get('functions', [])]}."
                         new_feedback = (
-                            f"smart_edit failed: {error_text}. "
+                            f"smart_edit failed:{error_text} - {existing} "
                             f"The function/class does not exist yet. "
                             f"Use action='add_function' instead of 'replace_function'. "
                             f"If adding to a class, include 'class_name'. "
@@ -175,22 +194,41 @@ class ExecutorAgent(BaseAgent):
         return "COMPLETED TASKS IN THIS GROUP (use their signatures/names):\n" + "\n".join(siblings)
     
     def _get_file_context(self, task):
-        from common.tools import file_summary, list_files
         target = task.get("file")
+        desc = task.get("description", "")
         files = list_files(".", WORKSPACE_PATH)
         if not files["success"]:
             return None
+
+        # Extraer archivos mencionados en la descripción de la task
+        mentioned = set()
+        for f in files.get("files", []):
+            if f in desc:
+                mentioned.add(f)
+
         summaries = []
         for f in files.get("files", []):
-            if not f.endswith(('.py', '.js', '.ts', '.json')):
+            if not f.endswith(('.py', '.js', '.ts', '.tsx', '.json', '.sql')):
                 continue
-            result = file_summary(f, WORKSPACE_PATH)
-            if result["success"]:
-                prefix = ">>> TARGET" if target and f.endswith(target) else "    "
-                summaries.append(f"{prefix} {f}:\n{result['content']}")
+
+            is_target = target and f.endswith(target)
+            is_dependency = f in mentioned
+
+            if is_target or is_dependency:
+                # Código completo para target y dependencias
+                result = read_file(f, WORKSPACE_PATH)
+                if result["success"]:
+                    prefix = ">>> TARGET" if is_target else ">>> DEPENDENCY"
+                    summaries.append(f"{prefix} {f}:\n{result['content']}")
+            else:
+                # Solo summary para el resto
+                result = file_summary(f, WORKSPACE_PATH)
+                if result["success"]:
+                    summaries.append(f"    {f}:\n{result['content']}")
+
         if not summaries:
             return None
-        return "WORKSPACE FILES (use these exact signatures):\n" + "\n".join(summaries)
+        return "WORKSPACE FILES:\n" + "\n".join(summaries)
 
     def _get_workspace_summary(self):
         """List files in workspace with their function/class signatures."""
@@ -222,6 +260,10 @@ class ExecutorAgent(BaseAgent):
         # Get context for sibling tasks
         sibling_context = self._get_sibling_context(task, completed_tasks)
 
+        # Snapshot ANTES de que nadie toque nada
+        pre_task_snapshot = tempfile.mkdtemp(prefix="ws_task_")
+        shutil.copytree(WORKSPACE_PATH, pre_task_snapshot, dirs_exist_ok=True)
+
         # First attempt with assigned model
         success, result, last_feedback = self._attempt_task(task, coder, validator, workspace_context_bus, sibling_context=sibling_context)
         if success:
@@ -234,6 +276,10 @@ class ExecutorAgent(BaseAgent):
             next_tier = self.ESCALATION_CHAIN[tier]
             if next_tier not in self.coder_pool:
                 break
+
+            # Restaurar estado limpio antes de cada tier
+            shutil.rmtree(WORKSPACE_PATH)
+            shutil.copytree(pre_task_snapshot, WORKSPACE_PATH)
 
             escalated_coder = self.coder_pool[next_tier]
             print(f"\n  [ESCALATE] {tier} -> {next_tier} ({escalated_coder.llm.provider}:{escalated_coder.llm.model})")
@@ -251,6 +297,13 @@ class ExecutorAgent(BaseAgent):
                 return result
 
             tier = next_tier
+
+        # Restaurar workspace — como si la task nunca existió
+        shutil.rmtree(WORKSPACE_PATH)
+        shutil.copytree(pre_task_snapshot, WORKSPACE_PATH)
+        shutil.rmtree(pre_task_snapshot)
+        print(f"  [EXHAUSTED] Task {task['id']} failed — workspace restored")
+        return {"task_id": task["id"], "summary": "Failed after all escalation tiers", "success": False}
 
         print(f"  [EXHAUSTED] Task {task['id']} failed after all tiers")
         return {"task_id": task["id"], "summary": "Failed after all escalation tiers", "success": False}

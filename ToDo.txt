@@ -1,3 +1,11 @@
+--- Fix:
+- [ ] Context workspace coder, Incluir signatures de funciones (params), no solo nombres, Pasar file_summary real del código generado, no la task description
+- [✅] Blueprint/ArchitectDefinir convenciones: export style, IPC naming, typing JS (no Python)
+- [✅] TaskerTasks de "integración" (index.js, preload, ipc-handlers) deberían listar contratos explícitos
+- [ ]  Validator, mejorar validacion x tarea mirar todo, Añadir checks programáticos (export/import match, IPC channel match, constructor arity) antes del LLM
+- [ ]  Promptcoder_prompt.txtRegla: "Never use Python conventions (init, type hints) in JS projects"
+
+
 --- v1: DONE
 - [✅] Acabar pipeline de main runtime
 - [✅] Fix execution

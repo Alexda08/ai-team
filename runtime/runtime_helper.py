@@ -47,3 +47,11 @@ class RuntimeHelper:
                 return f.read()
         except Exception as e:
             return None
+
+    @staticmethod
+    def get_ideation():
+        try:
+            with open("output/ideation.md", "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            return None
