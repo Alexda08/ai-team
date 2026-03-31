@@ -53,6 +53,18 @@ class CoderAgent(BaseAgent):
                 f"Do NOT use read_context — the context is already provided."
             )
 
+        # For .svelte/.vue files, force create_file with complete rewrite
+        target_file = task.get("file", "")
+        svelte_block = ""
+        if target_file and any(target_file.endswith(ext) for ext in (".svelte", ".vue")):
+            svelte_block = (
+                "\nCRITICAL — SVELTE/VUE FILE:\n"
+                "This file uses <script> blocks. Do NOT use multiple smart_edit calls.\n"
+                "Instead, use a SINGLE create_file with the COMPLETE file content (script + markup + style).\n"
+                "Copy the existing content from the TARGET file above, apply your changes, and write the full file.\n"
+                "This overwrites the file — include ALL existing code plus your additions.\n"
+            )
+
         sibling_block = ""
         if sibling_context:
             sibling_block = f"\n{sibling_context}"
@@ -63,6 +75,7 @@ class CoderAgent(BaseAgent):
 
         base_prompt = f"""
             {file_block}
+            {svelte_block}
             {sibling_block}
             {context_block}
 
@@ -106,6 +119,25 @@ class CoderAgent(BaseAgent):
         if "actions" not in plan or not isinstance(plan["actions"], list):
             print(f"  [ERROR] Invalid plan: missing 'actions'. Got keys: {list(plan.keys())}")
             return {"summary": plan.get("summary", "Invalid plan"), "results": [], "success": False}
+
+        # Safety net: reject multiple smart_edits to .svelte/.vue files
+        svelte_edits = {}
+        for action in plan["actions"]:
+            p = action.get("path", "")
+            if action.get("tool") == "smart_edit" and any(p.endswith(ext) for ext in (".svelte", ".vue")):
+                svelte_edits[p] = svelte_edits.get(p, 0) + 1
+        
+        for p, count in svelte_edits.items():
+            if count >= 3:
+                print(f"  [REJECTED] {count} smart_edits to {p} — use create_file for .svelte/.vue")
+                return {
+                    "summary": plan.get("summary", ""),
+                    "results": [{"tool": "smart_edit", "result": {
+                        "success": False,
+                        "error": f"Multiple smart_edits ({count}) to {p} rejected. Use a single create_file with the complete file content instead."
+                    }}],
+                    "success": False
+                }
 
         results = []
 

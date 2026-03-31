@@ -79,13 +79,29 @@ class ExecutorAgent(BaseAgent):
             file_context = self._get_file_context(task)
 
             action_plan = coder.plan_task(task, workspace_context_bus, current_feedback, file_context, sibling_context=sibling_context)
-            print(f"  [PLAN] actions: {[a.get('tool') for a in action_plan.get('actions', [])]}")
+            planned_tools = [a.get("tool") for a in action_plan.get("actions", [])]
+            print(f"  [PLAN] actions: {planned_tools}")
+
+            # Reject read-only plans when context was already provided
+            has_write = any(t in planned_tools for t in ("create_file", "smart_edit"))
+            if not has_write and file_context:
+                print(f"  [REJECTED] Read-only plan with context already provided")
+                feedback_history.append(
+                    f"Attempt {attempt + 1}: You planned only {planned_tools} but context is already provided. "
+                    f"You MUST use create_file or smart_edit to make changes. "
+                    f"Do NOT use read_context — the file contents are already in your prompt. "
+                    f"Task: {task['description'][:200]}"
+                )
+                if attempt < self.max_retries:
+                    print(f"  [RETRY] Attempt {attempt + 2}/{self.max_retries + 1}")
+                continue
+
             res_coder = coder.code_task(action_plan, WORKSPACE_PATH)
 
             if not res_coder["success"]:
                 actions_used = [a.get("tool") for a in action_plan.get("actions", [])]
                 smart_edit_used = "smart_edit" in actions_used
-                read_used = any(a in actions_used for a in ("read_file", "file_summary", "read_file_lines"))
+                read_used = any(a in actions_used for a in ("read_context", "read_file", "file_summary", "read_file_lines"))
 
                 # smart_edit was used but failed
                 if smart_edit_used:
@@ -208,7 +224,7 @@ class ExecutorAgent(BaseAgent):
 
         summaries = []
         for f in files.get("files", []):
-            if not f.endswith(('.py', '.js', '.ts', '.tsx', '.json', '.sql')):
+            if not f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.sql', '.svelte', '.vue', '.html', '.css', '.scss')):
                 continue
 
             is_target = target and f.endswith(target)

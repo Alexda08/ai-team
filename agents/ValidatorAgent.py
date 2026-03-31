@@ -361,7 +361,7 @@ class ValidatorAgent(BaseAgent):
             return {"status": "FAILED", "fixes": []}
 
         code_files = [f for f in all_files.get("files", [])
-                      if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.yaml', '.yml', '.sql'))]
+                    if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.yaml', '.yml', '.sql'))]
 
         # Phase 1: Programmatic cross-file validation (ALL files)
         prog_fixes = self._programmatic_project_validation(code_files)
@@ -493,10 +493,10 @@ class ValidatorAgent(BaseAgent):
                         fixes.append({
                             "file": f,
                             "issue": f"Import mismatch: '{name}' from '{imp['raw_path']}' — "
-                                     f"'{found}' exports {sorted(export_names)}",
+                                        f"'{found}' exports {sorted(export_names)}",
                             "action": "replace_function",
                             "description": f"In {f}: '{name}' is not exported by '{found}'. "
-                                           f"Available exports: {sorted(export_names)}"
+                                        f"Available exports: {sorted(export_names)}"
                         })
 
         # Check 3: Export style consistency (for JS/TS projects)

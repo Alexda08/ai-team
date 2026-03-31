@@ -21,72 +21,162 @@ def _write_lines(full_path, lines):
 
 
 def _find_function_bounds(lines, function_name):
+    """Find start/end of a function by name. Supports Python, JS/TS, Svelte, Go, Rust, Ruby, PHP, Java, C#, Kotlin, Swift, Dart."""
     func_start = None
     func_indent = None
+    uses_braces = False
+
+    # Patterns that indicate a function definition for `function_name`
+    # Order matters — more specific patterns first
+    patterns = [
+        # Python: def name(
+        rf"def\s+{re.escape(function_name)}\s*\(",
+        # JS/TS: function name(, async function name(, export function name(
+        rf"(?:export\s+)?(?:async\s+)?function\s+{re.escape(function_name)}\s*\(",
+        # JS/TS arrow: const/let/var name = (async)? (
+        rf"(?:const|let|var)\s+{re.escape(function_name)}\s*=\s*(?:async\s*)?\(",
+        # JS/TS arrow: const/let/var name = async? () =>
+        rf"(?:const|let|var)\s+{re.escape(function_name)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>",
+        # Class method: name( or async name(
+        rf"(?:async\s+)?{re.escape(function_name)}\s*\(",
+        # Go: func name(, func (receiver) name(
+        rf"func\s+(?:\([^)]*\)\s+)?{re.escape(function_name)}\s*\(",
+        # Rust: fn name(, pub fn name(, async fn name(
+        rf"(?:pub\s+)?(?:async\s+)?fn\s+{re.escape(function_name)}\s*\(",
+        # Ruby: def name
+        rf"def\s+{re.escape(function_name)}\b",
+        # PHP: function name(, public function name(
+        rf"(?:public|private|protected|static|\s)*function\s+{re.escape(function_name)}\s*\(",
+        # Java/C#/Kotlin: visibility type name(
+        rf"(?:public|private|protected|internal|static|override|suspend|open|\s)*\w+\s+{re.escape(function_name)}\s*\(",
+        # Swift: func name(
+        rf"(?:@\w+\s+)*(?:public|private|internal|open|static|override|\s)*func\s+{re.escape(function_name)}\s*\(",
+        # Dart: type name(, Future<type> name(
+        rf"(?:static\s+)?(?:\w+(?:<[^>]+>)?\s+)?{re.escape(function_name)}\s*\(",
+    ]
+
+    # Exclusion prefixes — lines that look like function calls, not definitions
+    call_prefixes = ("if", "for", "while", "switch", "catch", "return", "//", "/*", "*", "else", "elif", "print", "console", "await", "yield")
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        # Python: def func_name(
-        if stripped.startswith(f"def {function_name}(") or stripped.startswith(f"def {function_name} ("):
-            func_start = i
-            func_indent = len(line) - len(stripped)
-            break
-        # JS: method(, async method(, function name(
-        if (stripped.startswith(f"{function_name}(")
-            or stripped.startswith(f"async {function_name}(")
-            or stripped.startswith(f"function {function_name}(")):
-            func_start = i
-            func_indent = len(line) - len(stripped)
+        if not stripped or stripped.startswith(call_prefixes):
+            continue
+
+        for pattern in patterns:
+            if re.match(pattern, stripped):
+                func_start = i
+                func_indent = len(line) - len(stripped)
+                # Detect if this language uses braces
+                if "{" in stripped or (i + 1 < len(lines) and "{" in lines[i + 1].lstrip()[:3]):
+                    uses_braces = True
+                break
+        if func_start is not None:
             break
 
     if func_start is None:
         return None, None
 
-    func_end = func_start + 1
-    while func_end < len(lines):
-        line = lines[func_end]
-        if line.strip() == "":
+    # Find function end
+    if uses_braces:
+        func_end = _find_brace_block_end(lines, func_start)
+    else:
+        # Indentation-based (Python, Ruby, YAML, etc.)
+        func_end = func_start + 1
+        while func_end < len(lines):
+            line = lines[func_end]
+            if line.strip() == "":
+                func_end += 1
+                continue
+            current_indent = len(line) - len(line.lstrip())
+            if current_indent <= func_indent:
+                break
             func_end += 1
-            continue
-        current_indent = len(line) - len(line.lstrip())
-        if current_indent <= func_indent:
-            break
-        func_end += 1
 
     return func_start, func_end
 
 
+def _find_brace_block_end(lines, start_line):
+    """Find the end of a brace-delimited block starting at or after start_line."""
+    brace_count = 0
+    found_open = False
+
+    for i in range(start_line, len(lines)):
+        line = lines[i]
+        # Skip string contents (simple heuristic — count braces outside quotes)
+        in_string = False
+        for j, ch in enumerate(line):
+            if ch in ('"', "'", '`') and (j == 0 or line[j-1] != '\\'):
+                in_string = not in_string
+            if in_string:
+                continue
+            if ch == '{':
+                brace_count += 1
+                found_open = True
+            elif ch == '}':
+                brace_count -= 1
+                if found_open and brace_count == 0:
+                    return i + 1
+
+    # Fallback: couldn't find matching brace, return reasonable estimate
+    return min(start_line + 50, len(lines))
+
+
 def _find_class_end(lines, class_name):
+    """Find insertion point at end of a class. Supports Python, JS/TS, Java, C#, Kotlin, Swift, Dart, PHP, Ruby."""
     class_start = None
     class_indent = None
+    uses_braces = False
+
+    patterns = [
+        # Python: class Name( or class Name:
+        rf"class\s+{re.escape(class_name)}\s*[\(:]",
+        # JS/TS/Java/C#/Kotlin/Dart/PHP: class Name {, class Name extends X {
+        rf"(?:export\s+)?(?:abstract\s+)?(?:public\s+)?class\s+{re.escape(class_name)}\b",
+        # Ruby: class Name
+        rf"class\s+{re.escape(class_name)}\b",
+        # Rust: struct Name {, impl Name {
+        rf"(?:pub\s+)?(?:struct|impl|enum)\s+{re.escape(class_name)}\b",
+        # Swift: class/struct Name {
+        rf"(?:public\s+|private\s+|internal\s+|open\s+)?(?:class|struct)\s+{re.escape(class_name)}\b",
+        # Go: type Name struct {
+        rf"type\s+{re.escape(class_name)}\s+struct\b",
+    ]
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if (stripped.startswith(f"class {class_name}(") or stripped.startswith(f"class {class_name}:")
-            or stripped.startswith(f"class {class_name} {{") or stripped.startswith(f"class {class_name}{{")):
-            class_start = i
-            class_indent = len(line) - len(stripped)
+        for pattern in patterns:
+            if re.match(pattern, stripped):
+                class_start = i
+                class_indent = len(line) - len(stripped)
+                if "{" in stripped or (i + 1 < len(lines) and "{" in lines[i + 1].lstrip()[:3]):
+                    uses_braces = True
+                break
+        if class_start is not None:
             break
 
     if class_start is None:
         return None
 
-    insert_at = class_start + 1
-    for i in range(class_start + 1, len(lines)):
-        line = lines[i]
-        if line.strip() == "":
+    if uses_braces:
+        return _find_brace_block_end(lines, class_start)
+    else:
+        # Indentation-based (Python, Ruby)
+        insert_at = class_start + 1
+        for i in range(class_start + 1, len(lines)):
+            line = lines[i]
+            if line.strip() == "":
+                insert_at = i + 1
+                continue
+            current_indent = len(line) - len(line.lstrip())
+            if current_indent <= class_indent:
+                break
             insert_at = i + 1
-            continue
-        current_indent = len(line) - len(line.lstrip())
-        if current_indent <= class_indent:
-            break
-        insert_at = i + 1
-
-    return insert_at
+        return insert_at
 
 
 def _get_file_structure(path, workspace_path):
-    """Extract imports, classes, functions, exports from a file. Multi-language."""
+    """Extract imports, classes, functions, exports from a file. Universal multi-language support."""
     try:
         full_path = _resolve(path, workspace_path)
         with open(full_path, "r", encoding="utf-8") as f:
@@ -101,77 +191,245 @@ def _get_file_structure(path, workspace_path):
     exports = []
     constructors = []
 
-    is_py = path.endswith(".py")
-    is_js = path.endswith((".js", ".ts", ".tsx", ".jsx"))
+    ext = os.path.splitext(path)[1].lower()
+
+    # Language detection by extension
+    lang = _detect_language(ext)
+
+    # For component files (Svelte, Vue), extract script content
+    script_content = content
+    if lang == "svelte":
+        match = re.search(r'<script[^>]*>(.*?)</script>', content, re.DOTALL)
+        if match:
+            script_content = match.group(1)
+            lines = script_content.split("\n")
+        lang = "js"  # Parse script block as JS
+    elif lang == "vue":
+        match = re.search(r'<script[^>]*>(.*?)</script>', content, re.DOTALL)
+        if match:
+            script_content = match.group(1)
+            lines = script_content.split("\n")
+        lang = "js"
 
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "#", "/*", "*", "<!--")):
+            continue
 
-        # Imports
-        if is_py and (stripped.startswith("import ") or stripped.startswith("from ")):
+        # ── IMPORTS ──
+        if lang == "python" and (stripped.startswith("import ") or stripped.startswith("from ")):
             imports.append(stripped)
-        elif is_js and ("require(" in stripped or stripped.startswith("import ")):
+        elif lang == "js" and ("require(" in stripped or stripped.startswith("import ")):
+            imports.append(stripped)
+        elif lang == "go" and stripped.startswith("import"):
+            imports.append(stripped)
+        elif lang == "rust" and (stripped.startswith("use ") or stripped.startswith("extern crate")):
+            imports.append(stripped)
+        elif lang == "java" and stripped.startswith("import "):
+            imports.append(stripped)
+        elif lang == "ruby" and (stripped.startswith("require") or stripped.startswith("include")):
+            imports.append(stripped)
+        elif lang == "php" and (stripped.startswith("use ") or stripped.startswith("require") or stripped.startswith("include")):
+            imports.append(stripped)
+        elif lang == "swift" and stripped.startswith("import "):
+            imports.append(stripped)
+        elif lang == "dart" and stripped.startswith("import "):
+            imports.append(stripped)
+        elif lang == "kotlin" and stripped.startswith("import "):
             imports.append(stripped)
 
-        # Classes
-        if stripped.startswith("class "):
-            if is_py:
-                name = stripped.split("(")[0].split(":")[0].replace("class ", "").strip()
+        # ── CLASSES ──
+        # Go special case: type Name struct
+        go_struct = re.match(r'type\s+(\w+)\s+(?:struct|interface)\b', stripped)
+        if go_struct:
+            classes.append(go_struct.group(1))
+        else:
+            class_match = re.match(
+                r'(?:export\s+)?(?:abstract\s+)?(?:public\s+)?(?:open\s+)?(?:data\s+)?'
+                r'(?:class|struct|interface|enum|impl|trait|protocol|extension)\s+(\w+)',
+                stripped
+            )
+            if class_match and not stripped.startswith(("//", "#", "/*")):
+                classes.append(class_match.group(1))
+
+        # ── FUNCTIONS ──
+        func_info = _parse_function_line(stripped, line, i, lang, classes)
+        if func_info:
+            if func_info.get("is_constructor"):
+                constructors.append({"class": func_info.get("class"), "params": func_info["params"]})
             else:
-                name = re.match(r"class\s+(\w+)", stripped)
-                name = name.group(1) if name else stripped
-            classes.append(name)
+                functions.append(func_info)
 
-        # Functions with signatures
-        if is_py and stripped.startswith("def "):
-            sig_match = re.match(r"def\s+(\w+)\(([^)]*)\)", stripped)
-            if sig_match:
-                fname = sig_match.group(1)
-                params = sig_match.group(2)
-                indent = len(line) - len(line.lstrip())
-                parent = classes[-1] if indent > 0 and classes else None
-                functions.append({"name": fname, "params": params, "class": parent, "line": i})
-
-        if is_js:
-            # constructor(params)
-            if stripped.startswith("constructor("):
-                params_match = re.match(r"constructor\(([^)]*)\)", stripped)
-                if params_match and classes:
-                    constructors.append({"class": classes[-1], "params": params_match.group(1)})
-
-            # Regular methods: methodName(params) {
-            method_match = re.match(r"(async\s+)?(\w+)\(([^)]*)\)\s*\{?", stripped)
-            if method_match and not stripped.startswith(("if", "for", "while", "switch", "catch", "//", "/*", "return", "const", "let", "var")):
-                fname = method_match.group(2)
-                params = method_match.group(3)
-                indent = len(line) - len(line.lstrip())
-                parent = classes[-1] if indent > 0 and classes else None
-                is_async = bool(method_match.group(1))
-                functions.append({"name": fname, "params": params, "class": parent, "line": i, "async": is_async})
-
-            # function name(params)
-            func_match = re.match(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)\(([^)]*)\)", stripped)
-            if func_match:
-                functions.append({"name": func_match.group(1), "params": func_match.group(2), "class": None, "line": i})
-
-        # Exports
-        if is_js:
+        # ── EXPORTS ──
+        if lang == "js":
             if "module.exports" in stripped:
                 exports.append(stripped)
             elif stripped.startswith("export "):
                 exports.append(stripped)
-        if is_py and stripped.startswith("__all__"):
+        elif lang == "python" and stripped.startswith("__all__"):
             exports.append(stripped)
+        elif lang == "go" and re.match(r'func\s+[A-Z]', stripped):
+            exports.append(stripped.split("{")[0].strip())  # Go: exported = capitalized
+        elif lang == "rust" and stripped.startswith("pub "):
+            exports.append(stripped.split("{")[0].strip())
 
     return {
         "path": path,
-        "lines": len(lines),
+        "lines": len(content.split("\n")),
         "imports": imports,
         "classes": classes,
         "functions": functions,
         "constructors": constructors,
         "exports": exports
     }
+
+
+def _detect_language(ext):
+    """Map file extension to language identifier."""
+    mapping = {
+        ".py": "python",
+        ".js": "js", ".ts": "js", ".tsx": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
+        ".svelte": "svelte", ".vue": "vue",
+        ".go": "go",
+        ".rs": "rust",
+        ".java": "java",
+        ".cs": "java",  # C# has similar syntax to Java for our purposes
+        ".kt": "kotlin", ".kts": "kotlin",
+        ".swift": "swift",
+        ".dart": "dart",
+        ".rb": "ruby",
+        ".php": "php",
+        ".r": "python",  # R has similar import/function patterns
+        ".lua": "lua",
+        ".ex": "elixir", ".exs": "elixir",
+    }
+    return mapping.get(ext, "unknown")
+
+
+def _parse_function_line(stripped, raw_line, line_num, lang, current_classes):
+    """Try to parse a function/method definition from a single line. Returns dict or None."""
+    indent = len(raw_line) - len(raw_line.lstrip())
+    parent = current_classes[-1] if indent > 0 and current_classes else None
+
+    # Skip obvious non-definitions
+    if stripped.startswith(("if", "for", "while", "switch", "catch", "return", "//", "/*", 
+                            "*", "else", "elif", "print", "console", "await", "yield",
+                            "throw", "raise", "break", "continue", "pass")):
+        return None
+
+    result = None
+
+    if lang == "python":
+        match = re.match(r'(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)', stripped)
+        if match:
+            result = {"name": match.group(1), "params": match.group(2), "class": parent, "line": line_num}
+            if match.group(1) == "__init__" and parent:
+                result["is_constructor"] = True
+
+    elif lang in ("js", "svelte", "vue"):
+        # constructor(params)
+        con_match = re.match(r'constructor\s*\(([^)]*)\)', stripped)
+        if con_match and current_classes:
+            return {"name": "constructor", "params": con_match.group(1), "class": parent,
+                    "line": line_num, "is_constructor": True}
+
+        # function name( or async function name(
+        func_match = re.match(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)', stripped)
+        if func_match:
+            return {"name": func_match.group(1), "params": func_match.group(2), "class": None, "line": line_num}
+
+        # const/let/var name = (async?) (...) => or (async?) function
+        arrow_match = re.match(r'(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*(?:=>|{)', stripped)
+        if arrow_match:
+            return {"name": arrow_match.group(1), "params": arrow_match.group(2), "class": None, "line": line_num}
+
+        # Class method: name(params) { or async name(params) {
+        method_match = re.match(r'(async\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*\w+(?:<[^>]+>)?\s*)?\{?', stripped)
+        if method_match:
+            fname = method_match.group(2)
+            if fname not in ("if", "for", "while", "switch", "catch", "else", "return", "new", "typeof", "instanceof"):
+                result = {"name": fname, "params": method_match.group(3), "class": parent, "line": line_num}
+                if method_match.group(1):
+                    result["async"] = True
+
+    elif lang == "go":
+        match = re.match(r'func\s+(?:\((\w+)\s+\*?(\w+)\)\s+)?(\w+)\s*\(([^)]*)\)', stripped)
+        if match:
+            receiver_type = match.group(2)
+            fname = match.group(3)
+            params = match.group(4)
+            result = {"name": fname, "params": params, "class": receiver_type, "line": line_num}
+
+    elif lang == "rust":
+        match = re.match(r'(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)', stripped)
+        if match:
+            result = {"name": match.group(1), "params": match.group(2), "class": parent, "line": line_num}
+            if match.group(1) == "new" and parent:
+                result["is_constructor"] = True
+
+    elif lang == "java":  # Also covers C#, Kotlin-ish
+        match = re.match(
+            r'(?:@\w+\s+)*(?:public|private|protected|internal|static|override|virtual|abstract|suspend|open|\s)*'
+            r'(?:\w+(?:<[^>]+>)?\s+)?(\w+)\s*\(([^)]*)\)',
+            stripped
+        )
+        if match:
+            fname = match.group(1)
+            if fname not in ("if", "for", "while", "switch", "catch", "return", "new", "else"):
+                result = {"name": fname, "params": match.group(2), "class": parent, "line": line_num}
+                if fname == parent:  # Java constructor = same name as class
+                    result["is_constructor"] = True
+
+    elif lang == "ruby":
+        match = re.match(r'def\s+(?:self\.)?(\w+[?!]?)\s*(?:\(([^)]*)\))?', stripped)
+        if match:
+            result = {"name": match.group(1), "params": match.group(2) or "", "class": parent, "line": line_num}
+            if match.group(1) == "initialize" and parent:
+                result["is_constructor"] = True
+
+    elif lang == "php":
+        match = re.match(
+            r'(?:public|private|protected|static|\s)*function\s+(\w+)\s*\(([^)]*)\)',
+            stripped
+        )
+        if match:
+            result = {"name": match.group(1), "params": match.group(2), "class": parent, "line": line_num}
+            if match.group(1) == "__construct" and parent:
+                result["is_constructor"] = True
+
+    elif lang == "swift":
+        match = re.match(
+            r'(?:@\w+\s+)*(?:public|private|internal|open|static|override|\s)*func\s+(\w+)\s*\(([^)]*)\)',
+            stripped
+        )
+        if match:
+            result = {"name": match.group(1), "params": match.group(2), "class": parent, "line": line_num}
+        init_match = re.match(r'(?:public|private|internal|convenience|\s)*init\s*\(([^)]*)\)', stripped)
+        if init_match and parent:
+            return {"name": "init", "params": init_match.group(1), "class": parent,
+                    "line": line_num, "is_constructor": True}
+
+    elif lang == "dart":
+        match = re.match(
+            r'(?:static\s+)?(?:\w+(?:<[^>]+>)?\s+)?(\w+)\s*\(([^)]*)\)\s*(?:async\s*)?\{?',
+            stripped
+        )
+        if match:
+            fname = match.group(1)
+            if fname not in ("if", "for", "while", "switch", "catch", "return"):
+                result = {"name": fname, "params": match.group(2), "class": parent, "line": line_num}
+                if fname == parent:
+                    result["is_constructor"] = True
+
+    elif lang == "kotlin":
+        match = re.match(
+            r'(?:public|private|internal|protected|override|suspend|open|\s)*fun\s+(\w+)\s*\(([^)]*)\)',
+            stripped
+        )
+        if match:
+            result = {"name": match.group(1), "params": match.group(2), "class": parent, "line": line_num}
+
+    return result
 
 
 def _resolve_import_path(raw_path, importing_file, workspace_path):
