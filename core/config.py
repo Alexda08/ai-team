@@ -56,6 +56,14 @@ class LearningConfig:
 
 
 @dataclass
+class ClaudeCodeConfig:
+    enabled: bool = False
+    max_turns: int = 10
+    timeout: int = 300
+    allowed_tools: str = "Edit,Write,Read,Bash"
+
+
+@dataclass
 class EvaluationConfig:
     enabled: bool = False
     parallel: bool = False
@@ -68,6 +76,7 @@ class DevTeamConfig:
     traces: TracesConfig = field(default_factory=TracesConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)
+    claude_code: ClaudeCodeConfig = field(default_factory=ClaudeCodeConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
 
@@ -113,6 +122,7 @@ def load_config(path: Optional[str] = None) -> DevTeamConfig:
             "traces": config.traces,
             "security": config.security,
             "learning": config.learning,
+            "claude_code": config.claude_code,
             "evaluation": config.evaluation,
         }
 

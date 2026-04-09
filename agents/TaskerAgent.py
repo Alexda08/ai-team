@@ -47,6 +47,7 @@ class TaskerAgent(BaseAgent):
     # --- Generation ---
 
     def generate_tasks(self, blueprint, plan=None):
+        self._emit_turn_start("Generating task tree")
         if plan:
             prompt = f"""
                 PROJECT BLUEPRINT:
@@ -103,7 +104,9 @@ class TaskerAgent(BaseAgent):
             json_schema=TASK_TREE_SCHEMA
         )
  
-        return Utils.clean_json(raw)
+        result = Utils.clean_json(raw)
+        self._emit_turn_end(output_summary=f"Task tree generated ({len(result)} chars)")
+        return result
 
     # --- Validation ---
 

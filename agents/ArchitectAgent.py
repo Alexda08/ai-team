@@ -35,6 +35,7 @@ class ArchitectAgent(BaseAgent):
         super().__init__(name, system_prompt, llm)
 
     def review_plan(self, plan):
+        self._emit_turn_start("Reviewing plan")
         prompt = f"""ACTION PLAN TO REVIEW:
             {plan}
 
@@ -67,7 +68,9 @@ class ArchitectAgent(BaseAgent):
             json_schema=REVIEW_SCHEMA
         )
 
-        return self._parse_review(raw)
+        result = self._parse_review(raw)
+        self._emit_turn_end(output_summary=f"Review: {result.get('status', 'UNKNOWN')}")
+        return result
 
     def _parse_review(self, raw):
         try:
@@ -86,6 +89,7 @@ class ArchitectAgent(BaseAgent):
             return {"status": "REWORK", "criteria": {}, "feedback": f"Failed to parse review: {e}"}
 
     def generate_bluePrint(self, plan):
+        self._emit_turn_start("Generating blueprint")
         prompt = f"""ACTION PLAN TO ARCHITECT:
             {plan}
 
@@ -140,7 +144,9 @@ class ArchitectAgent(BaseAgent):
             Produce the full PROJECT BLUEPRINT now.
         """
 
-        return self.llm.generate(
+        result = self.llm.generate(
             system=self.system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
+        self._emit_turn_end(output_summary=f"Blueprint generated ({len(result)} chars)")
+        return result

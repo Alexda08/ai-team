@@ -33,10 +33,12 @@ CODE_TASK_SCHEMA = {
 
 class CoderAgent(BaseAgent):
 
-    def __init__(self, name, system_prompt, llm):
-        super().__init__(name, system_prompt, llm)
+    def __init__(self, name, system_prompt, llm, tool_executor=None, event_bus=None):
+        super().__init__(name, system_prompt, llm, event_bus=event_bus)
+        self.tool_executor = tool_executor
 
     def plan_task(self, task, workspace_context_bus, retry_feedback=None, file_context=None, sibling_context=None):
+        self._emit_turn_start(f"Planning task {task.get('id', '')}")
         context_block = "WORKSPACE: Empty — no files exist yet."
 
         if workspace_context_bus and workspace_context_bus.history():
@@ -105,6 +107,7 @@ class CoderAgent(BaseAgent):
 
                 if "actions" in parsed and "reasoning" in parsed and "summary" in parsed:
                     if isinstance(parsed["actions"], list) and len(parsed["actions"]) > 0:
+                        self._emit_turn_end(output_summary=f"Plan: {len(parsed['actions'])} actions")
                         return parsed
 
                 missing = [k for k in ("actions", "reasoning", "summary") if k not in parsed]
@@ -113,11 +116,14 @@ class CoderAgent(BaseAgent):
             except json.JSONDecodeError as e:
                 print(f"  [RETRY {attempt+1}] Invalid JSON: {e}")
 
+        self._emit_turn_end(output_summary="Plan generation failed after 3 attempts")
         return {"reasoning": "Failed to generate valid plan", "actions": [], "summary": "Plan generation failed after 3 attempts"}
 
     def code_task(self, plan, workspace_path):
+        self._emit_turn_start(f"Executing {len(plan.get('actions', []))} actions")
         if "actions" not in plan or not isinstance(plan["actions"], list):
             print(f"  [ERROR] Invalid plan: missing 'actions'. Got keys: {list(plan.keys())}")
+            self._emit_turn_end(output_summary="Invalid plan format")
             return {"summary": plan.get("summary", "Invalid plan"), "results": [], "success": False}
 
         # Safety net: reject multiple smart_edits to .svelte/.vue files
@@ -130,6 +136,7 @@ class CoderAgent(BaseAgent):
         for p, count in svelte_edits.items():
             if count >= 3:
                 print(f"  [REJECTED] {count} smart_edits to {p} — use create_file for .svelte/.vue")
+                self._emit_turn_end(output_summary=f"Rejected: {count} smart_edits to {p}")
                 return {
                     "summary": plan.get("summary", ""),
                     "results": [{"tool": "smart_edit", "result": {
@@ -158,31 +165,51 @@ class CoderAgent(BaseAgent):
                     print(f"  [SKIPPED] {tool}: missing path")
                     continue
 
-            # Dispatch
-            if tool == "create_file":
-                result = create_file(
-                    path,
-                    action.get("content", ""),
-                    workspace_path=workspace_path
-                )
-            elif tool == "read_context":
-                result = read_context(path, workspace_path=workspace_path)
-            elif tool == "smart_edit":
-                edit_action = action.get("action", "add_function")
-                # Intercept create action — redirect to create_file
-                if edit_action == "create":
-                    result = create_file(path, action.get("content", ""), workspace_path=workspace_path)
+            # Dispatch — use ToolExecutor if available, otherwise direct calls
+            if self.tool_executor:
+                if tool == "create_file":
+                    result = self.tool_executor.execute(tool, agent_name=self.name,
+                        path=path, content=action.get("content", ""), workspace_path=workspace_path)
+                elif tool == "read_context":
+                    result = self.tool_executor.execute(tool, agent_name=self.name,
+                        path=path, workspace_path=workspace_path)
+                elif tool == "smart_edit":
+                    edit_action = action.get("action", "add_function")
+                    if edit_action == "create":
+                        result = self.tool_executor.execute("create_file", agent_name=self.name,
+                            path=path, content=action.get("content", ""), workspace_path=workspace_path)
+                    else:
+                        result = self.tool_executor.execute(tool, agent_name=self.name,
+                            path=path, action=edit_action, content=action.get("content", ""),
+                            target=action.get("target"), class_name=action.get("class_name"),
+                            workspace_path=workspace_path)
                 else:
-                    result = smart_edit(
+                    result = {"success": False, "error": f"Unknown tool: {tool}. Available: create_file, read_context, smart_edit"}
+            else:
+                # Direct calls (backward compatible)
+                if tool == "create_file":
+                    result = create_file(
                         path,
-                        edit_action,
                         action.get("content", ""),
-                        target=action.get("target"),
-                        class_name=action.get("class_name"),
                         workspace_path=workspace_path
                     )
-            else:
-                result = {"success": False, "error": f"Unknown tool: {tool}. Available: create_file, read_context, smart_edit"}
+                elif tool == "read_context":
+                    result = read_context(path, workspace_path=workspace_path)
+                elif tool == "smart_edit":
+                    edit_action = action.get("action", "add_function")
+                    if edit_action == "create":
+                        result = create_file(path, action.get("content", ""), workspace_path=workspace_path)
+                    else:
+                        result = smart_edit(
+                            path,
+                            edit_action,
+                            action.get("content", ""),
+                            target=action.get("target"),
+                            class_name=action.get("class_name"),
+                            workspace_path=workspace_path
+                        )
+                else:
+                    result = {"success": False, "error": f"Unknown tool: {tool}. Available: create_file, read_context, smart_edit"}
 
             results.append({"tool": tool, "result": result})
 
@@ -196,8 +223,10 @@ class CoderAgent(BaseAgent):
 
         # Success = at least one write operation succeeded
         write_results = [r for r in results if r["tool"] in ("create_file", "smart_edit")]
+        success = len(write_results) > 0 and all(r["result"]["success"] for r in write_results)
+        self._emit_turn_end(output_summary=f"success={success}, writes={len(write_results)}")
         return {
             "summary": plan.get("summary", ""),
             "results": results,
-            "success": len(write_results) > 0 and all(r["result"]["success"] for r in write_results)
+            "success": success
         }

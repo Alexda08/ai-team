@@ -6,6 +6,7 @@ class ThinkerAgent (BaseAgent):
         super().__init__(name, system_prompt, llm)
 
     def generate_plan(self, history, feedback=None):
+        self._emit_turn_start(f"Generating plan (feedback={'yes' if feedback else 'no'})")
         if feedback:
             review = feedback
             criteria = review.get("criteria", {})
@@ -85,7 +86,9 @@ class ThinkerAgent (BaseAgent):
                 Do not debate. Just produce the final plan.
             """
 
-        return self.llm.generate(
+        result = self.llm.generate(
             system=self.system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
+        self._emit_turn_end(output_summary=f"Plan generated ({len(result)} chars)")
+        return result

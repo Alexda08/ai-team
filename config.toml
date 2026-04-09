@@ -20,14 +20,20 @@ workspace_path = "./workspace"
 output_path = "./output"
 
 [traces]
-enabled = false
+enabled = true
 db_path = "traces/traces.db"
 
 [security]
 enabled = false
 
+[claude_code]
+enabled = true
+max_turns = 10
+timeout = 300
+allowed_tools = "Edit,Write,Read,Bash"
+
 [learning]
-enabled = false
+enabled = true
 min_quality = 0.7
 min_improvement = 0.02
 config_dir = "agent_configs"

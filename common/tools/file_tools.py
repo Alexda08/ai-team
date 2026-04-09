@@ -20,8 +20,83 @@ def _write_lines(full_path, lines):
         f.writelines(lines)
 
 
+def _find_function_bounds_via_ts_parser(lines, function_name):
+    """Try to find function bounds using ts_parser (tree-sitter + regex fallback).
+
+    Returns (start_line, end_line) or (None, None) if not found.
+    Uses extract_declarations() to get precise line numbers, then
+    _find_brace_block_end() for the end boundary.
+    """
+    try:
+        from common.ts_parser import extract_declarations
+    except ImportError:
+        return None, None
+
+    content = "\n".join(lines)
+
+    # Detect file type from content heuristics (we don't have the path here)
+    # Try multiple extensions to maximize coverage
+    for fake_path in ("file.ts", "file.js", "file.py", "file.go", "file.rs"):
+        decls = extract_declarations(content, fake_path)
+        if not decls:
+            continue
+
+        # Search in functions
+        for func in decls.get("functions", []):
+            if func["name"] == function_name:
+                start = func["line"] - 1  # convert 1-indexed to 0-indexed
+                if start < 0 or start >= len(lines):
+                    continue
+
+                # Determine end: brace-based or indent-based
+                stripped = lines[start].lstrip()
+                uses_braces = "{" in stripped or (
+                    start + 1 < len(lines) and "{" in lines[start + 1].lstrip()[:3]
+                )
+
+                if uses_braces:
+                    end = _find_brace_block_end(lines, start)
+                else:
+                    func_indent = len(lines[start]) - len(stripped)
+                    end = start + 1
+                    while end < len(lines):
+                        line = lines[end]
+                        if line.strip() == "":
+                            end += 1
+                            continue
+                        if (len(line) - len(line.lstrip())) <= func_indent:
+                            break
+                        end += 1
+
+                return start, end
+
+        # Also search in classes (for interface/type/enum replacement)
+        for cls in decls.get("classes", []):
+            if cls["name"] == function_name:
+                start = cls["line"] - 1
+                if start < 0 or start >= len(lines):
+                    continue
+                end = _find_brace_block_end(lines, start)
+                return start, end
+
+        # If we found declarations (parser worked) but not our function, stop trying other extensions
+        if decls.get("functions") or decls.get("classes"):
+            break
+
+    return None, None
+
+
 def _find_function_bounds(lines, function_name):
-    """Find start/end of a function by name. Supports Python, JS/TS, Svelte, Go, Rust, Ruby, PHP, Java, C#, Kotlin, Swift, Dart."""
+    """Find start/end of a function by name. Supports Python, JS/TS, Svelte, Go, Rust, Ruby, PHP, Java, C#, Kotlin, Swift, Dart.
+
+    Uses ts_parser (tree-sitter + regex) when available for precise line detection,
+    then falls back to regex pattern matching.
+    """
+    # Try ts_parser first for JS/TS/Svelte/Vue files — it handles all edge cases
+    ts_result = _find_function_bounds_via_ts_parser(lines, function_name)
+    if ts_result[0] is not None:
+        return ts_result
+
     func_start = None
     func_indent = None
     uses_braces = False
@@ -33,10 +108,10 @@ def _find_function_bounds(lines, function_name):
         rf"def\s+{re.escape(function_name)}\s*\(",
         # JS/TS: function name(, async function name(, export function name(
         rf"(?:export\s+)?(?:async\s+)?function\s+{re.escape(function_name)}\s*\(",
-        # JS/TS arrow: const/let/var name = (async)? (
-        rf"(?:const|let|var)\s+{re.escape(function_name)}\s*=\s*(?:async\s*)?\(",
-        # JS/TS arrow: const/let/var name = async? () =>
-        rf"(?:const|let|var)\s+{re.escape(function_name)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>",
+        # JS/TS arrow: [export] const/let/var name = (async)? (
+        rf"(?:export\s+)?(?:const|let|var)\s+{re.escape(function_name)}\s*=\s*(?:async\s*)?\(",
+        # JS/TS arrow: [export] const/let/var name = async? () =>
+        rf"(?:export\s+)?(?:const|let|var)\s+{re.escape(function_name)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>",
         # Class method: name( or async name(
         rf"(?:async\s+)?{re.escape(function_name)}\s*\(",
         # Go: func name(, func (receiver) name(
@@ -99,15 +174,27 @@ def _find_function_bounds(lines, function_name):
 
 
 def _find_brace_block_end(lines, start_line):
-    """Find the end of a brace-delimited block starting at or after start_line."""
+    """Find the end of a brace-delimited block starting at or after start_line.
+
+    For arrow functions like `export const GET = async ({ url }) => {`,
+    starts counting braces from the `=>` position to skip destructuring params.
+    """
     brace_count = 0
     found_open = False
 
     for i in range(start_line, len(lines)):
         line = lines[i]
-        # Skip string contents (simple heuristic — count braces outside quotes)
+
+        # For the first line, skip past `=>` if it's an arrow function
+        # This avoids counting destructuring params like ({ url }) as the block
+        scan_start = 0
+        if i == start_line and "=>" in line:
+            arrow_pos = line.index("=>")
+            scan_start = arrow_pos + 2
+
         in_string = False
-        for j, ch in enumerate(line):
+        for j in range(scan_start, len(line)):
+            ch = line[j]
             if ch in ('"', "'", '`') and (j == 0 or line[j-1] != '\\'):
                 in_string = not in_string
             if in_string:
@@ -633,6 +720,26 @@ def smart_edit(path: str, action: str, content: str, target: str = None, class_n
 
         # ADD_FUNCTION
         if action == "add_function":
+            # Idempotent: if the function already exists, replace it instead of duplicating
+            func_name = target  # target may contain the function name
+            if not func_name:
+                # Try to extract function name from content
+                import re as _re
+                name_match = _re.search(
+                    r'(?:export\s+)?(?:async\s+)?(?:function\s+|(?:const|let|var)\s+)(\w+)',
+                    content.strip()
+                )
+                if name_match:
+                    func_name = name_match.group(1)
+
+            if func_name:
+                existing_start, existing_end = _find_function_bounds(lines, func_name)
+                if existing_start is not None:
+                    # Function already exists — replace instead of duplicate
+                    lines[existing_start:existing_end] = [content + "\n"]
+                    _write_lines(full_path, lines)
+                    return {"success": True, "path": path, "action": "replaced_existing", "function": func_name}
+
             if class_name:
                 insert_at = _find_class_end(lines, class_name)
                 if insert_at is None:

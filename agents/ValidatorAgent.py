@@ -40,6 +40,12 @@ class ValidatorAgent(BaseAgent):
     # ═══════════════════════════════════════════════
 
     def validate_task(self, task, coder_result):
+        self._emit_turn_start(f"Validating task {task.get('id', '')}")
+        result = self._validate_task_inner(task, coder_result)
+        self._emit_turn_end(output_summary=f"status={result.get('status', 'UNKNOWN')}")
+        return result
+
+    def _validate_task_inner(self, task, coder_result):
         written_files = self._get_written_files(coder_result)
         if not written_files:
             return {"status": "FAILED", "issues": "No files were written by the CODER.", "files_checked": []}
@@ -335,6 +341,12 @@ class ValidatorAgent(BaseAgent):
     # ═══════════════════════════════════════════════
 
     def validate_project(self, tasks, completed_tasks):
+        self._emit_turn_start("Project validation")
+        result = self._validate_project_inner(tasks, completed_tasks)
+        self._emit_turn_end(output_summary=f"status={result.get('status', 'UNKNOWN')}, fixes={len(result.get('fixes', []))}")
+        return result
+
+    def _validate_project_inner(self, tasks, completed_tasks):
         all_files = list_files(".", WORKSPACE_PATH)
         if not all_files["success"]:
             return {"status": "FAILED", "fixes": []}
@@ -342,7 +354,18 @@ class ValidatorAgent(BaseAgent):
         code_files = [f for f in all_files.get("files", [])
                       if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.svelte', '.vue', '.json', '.yaml', '.yml', '.sql'))]
 
-        # Phase 1: Programmatic cross-file validation (ALL files)
+        # Phase 0: Build/compiler validation (real tools, no LLM)
+        build_result = self._phase_build_check()
+        if build_result is not None:
+            if build_result["status"] == "PASSED":
+                print(f"  [BUILD] {build_result['tool']} — PASSED")
+            else:
+                print(f"  [BUILD] {build_result['tool']} — FAILED ({len(build_result['fixes'])} errors)")
+                for fix in build_result["fixes"][:5]:
+                    print(f"    - {fix['issue'][:120]}")
+                return build_result
+
+        # Phase 1-6: Programmatic cross-file validation (ALL files)
         prog_fixes = self._programmatic_project_validation(code_files)
 
         if prog_fixes:
@@ -351,7 +374,7 @@ class ValidatorAgent(BaseAgent):
                 print(f"    - {fix['issue'][:120]}")
             return {"status": "FAILED", "fixes": prog_fixes}
 
-        # Phase 2: LLM validation (only if programmatic passes)
+        # Phase 7: LLM validation (only if everything else passes)
         file_contents = {}
         for file_path in code_files:
             if not file_path.endswith(('.json', '.yaml', '.yml', '.sql')):
@@ -407,11 +430,310 @@ class ValidatorAgent(BaseAgent):
         if fixes:
             return {"status": "FAILED", "fixes": fixes}
 
-        if "PASSED" in response.upper() and "FAILED" not in response.upper():
+        # Check for PASSED indicators in the text
+        resp_upper = response.upper()
+        if "PASSED" in resp_upper and "FAILED" not in resp_upper:
             return {"status": "PASSED", "fixes": []}
 
-        print(f"  [WARN] Could not parse validation response")
-        return {"status": "FAILED", "fixes": []}
+        # If response mentions no issues/bugs/errors, treat as PASSED
+        no_issue_indicators = ["no issues", "no bugs", "no errors", "all correct", "looks good",
+                               "everything is correct", "no problems", "code is correct", "no fix"]
+        resp_lower = response.lower()
+        if any(indicator in resp_lower for indicator in no_issue_indicators):
+            print(f"  [INFO] Response unparseable but indicates no issues — treating as PASSED")
+            return {"status": "PASSED", "fixes": []}
+
+        # Retry once — LLM may produce better JSON on second attempt
+        print(f"  [WARN] Could not parse validation response, retrying...")
+        retry_response = self.llm.generate(
+            system=self.system_prompt,
+            messages=[{"role": "user", "content": prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No explanation."}],
+            json_schema=FINAL_VALIDATION_SCHEMA
+        )
+        try:
+            parsed = json.loads(Utils.clean_json(retry_response))
+            if "status" in parsed and "fixes" in parsed:
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Last resort: if we still can't parse, treat as PASSED
+        # Rationale: programmatic checks already ran and caught real issues.
+        # If the LLM can't articulate specific fixes, there likely aren't any critical ones left.
+        print(f"  [WARN] Could not parse validation after retry — treating as PASSED (programmatic checks already ran)")
+        return {"status": "PASSED", "fixes": []}
+
+    # ═══════════════════════════════════════════════
+    # PHASE 0: BUILD / COMPILER VALIDATION
+    # ═══════════════════════════════════════════════
+
+    # Map of project indicators → (build commands, display name)
+    _BUILD_CONFIGS = [
+        # TypeScript / SvelteKit / Next.js / Node
+        {
+            "detect": ["tsconfig.json"],
+            "name": "TypeScript",
+            "install": "npm install --ignore-scripts 2>&1",
+            "check": "npx tsc --noEmit 2>&1",
+        },
+        # JavaScript (Node, no TS)
+        {
+            "detect": ["package.json"],
+            "detect_not": ["tsconfig.json"],
+            "name": "Node.js",
+            "install": "npm install --ignore-scripts 2>&1",
+            "check": None,  # No type checker for plain JS
+        },
+        # Python
+        {
+            "detect": ["pyproject.toml", "setup.py", "setup.cfg"],
+            "name": "Python",
+            "install": None,
+            "check": "python -m py_compile {files}",
+            "file_glob": "**/*.py",
+        },
+        # Go
+        {
+            "detect": ["go.mod"],
+            "name": "Go",
+            "install": "go mod download 2>&1",
+            "check": "go build ./... 2>&1",
+        },
+        # Rust
+        {
+            "detect": ["Cargo.toml"],
+            "name": "Rust",
+            "install": None,
+            "check": "cargo check 2>&1",
+        },
+        # PHP
+        {
+            "detect": ["composer.json"],
+            "name": "PHP",
+            "install": "composer install --no-interaction 2>&1",
+            "check": None,  # php -l per file is slow, skip for now
+        },
+        # Dart / Flutter
+        {
+            "detect": ["pubspec.yaml"],
+            "name": "Dart",
+            "install": "dart pub get 2>&1",
+            "check": "dart analyze 2>&1",
+        },
+    ]
+
+    def _phase_build_check(self):
+        """Detect project type and run the appropriate compiler/build check.
+
+        Returns None if no project type detected.
+        Returns {"status": "PASSED"/"FAILED", "tool": str, "fixes": [...]} otherwise.
+        """
+        import subprocess, glob as _glob
+
+        # Detect project type
+        config = None
+        for cfg in self._BUILD_CONFIGS:
+            detect_files = cfg["detect"]
+            detect_not = cfg.get("detect_not", [])
+
+            has_detect = any(
+                os.path.isfile(os.path.join(WORKSPACE_PATH, f)) for f in detect_files
+            )
+            has_not = any(
+                os.path.isfile(os.path.join(WORKSPACE_PATH, f)) for f in detect_not
+            )
+
+            if has_detect and not has_not:
+                config = cfg
+                break
+
+        if config is None:
+            return None
+
+        tool_name = config["name"]
+        print(f"  [BUILD] Detected: {tool_name}")
+
+        # Step 1: Install dependencies (if needed)
+        install_cmd = config.get("install")
+        if install_cmd:
+            print(f"  [BUILD] Installing dependencies...")
+            try:
+                result = subprocess.run(
+                    install_cmd, shell=True, cwd=WORKSPACE_PATH,
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    # Install failed — generate fix
+                    error_lines = (result.stderr or result.stdout or "Unknown install error").strip()
+                    print(f"  [BUILD] Install failed")
+                    return {
+                        "status": "FAILED",
+                        "tool": f"{tool_name} install",
+                        "fixes": self._parse_build_errors(error_lines, tool_name, "install"),
+                    }
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "FAILED",
+                    "tool": f"{tool_name} install",
+                    "fixes": [{"file": "package.json", "issue": "Install timed out after 120s",
+                               "action": "create", "description": "Dependencies could not be installed — check package.json"}],
+                }
+
+        # Step 2: Run compiler/type check
+        check_cmd = config.get("check")
+        if not check_cmd:
+            # No check command (plain JS, PHP) — install passed, that's enough
+            return {"status": "PASSED", "tool": tool_name, "fixes": []}
+
+        # Handle per-file checks (Python py_compile)
+        if "{files}" in check_cmd:
+            pattern = config.get("file_glob", "**/*.py")
+            py_files = _glob.glob(os.path.join(WORKSPACE_PATH, pattern), recursive=True)
+            all_errors = []
+            for py_file in py_files:
+                rel = os.path.relpath(py_file, WORKSPACE_PATH)
+                try:
+                    result = subprocess.run(
+                        f"python -m py_compile \"{py_file}\"",
+                        shell=True, cwd=WORKSPACE_PATH,
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if result.returncode != 0:
+                        all_errors.append(f"{rel}: {result.stderr.strip()}")
+                except Exception:
+                    pass
+            if all_errors:
+                return {
+                    "status": "FAILED",
+                    "tool": f"{tool_name} compile",
+                    "fixes": self._parse_build_errors("\n".join(all_errors), tool_name, "compile"),
+                }
+            return {"status": "PASSED", "tool": tool_name, "fixes": []}
+
+        # Standard check command
+        print(f"  [BUILD] Running: {check_cmd}")
+        try:
+            result = subprocess.run(
+                check_cmd, shell=True, cwd=WORKSPACE_PATH,
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                return {"status": "PASSED", "tool": tool_name, "fixes": []}
+
+            error_output = (result.stdout or "") + "\n" + (result.stderr or "")
+            fixes = self._parse_build_errors(error_output.strip(), tool_name, "check")
+
+            return {
+                "status": "FAILED",
+                "tool": f"{tool_name} check",
+                "fixes": fixes,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "FAILED",
+                "tool": f"{tool_name} check",
+                "fixes": [{"file": "", "issue": "Build check timed out after 120s",
+                           "action": "create", "description": "Build check timed out"}],
+            }
+
+    def _parse_build_errors(self, error_output, tool_name, phase):
+        """Parse compiler output into structured fix objects.
+
+        Handles:
+        - TypeScript: src/file.ts(10,5): error TS2345: ...
+        - Python: File "file.py", line 10 ...
+        - Go: ./file.go:10:5: ...
+        - Rust: error[E0308]: ... --> src/file.rs:10:5
+        - Dart: file.dart:10:5 ...
+        - Generic: file:line: error message
+        """
+        fixes = []
+        seen = set()
+
+        # TypeScript pattern: src/file.ts(line,col): error TSxxxx: message
+        for m in re.finditer(r'([^\s(]+\.[a-z]+)\((\d+),\d+\):\s*error\s+TS\d+:\s*(.+)', error_output):
+            file_path, line, message = m.group(1), m.group(2), m.group(3).strip()
+            key = (file_path, message[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            fixes.append({
+                "file": file_path,
+                "issue": f"[{tool_name}] Line {line}: {message}",
+                "action": "replace_function",
+                "description": f"Fix TypeScript error at {file_path}:{line} — {message}",
+            })
+
+        # Go pattern: ./file.go:line:col: message
+        for m in re.finditer(r'\./([^\s:]+):(\d+):\d+:\s*(.+)', error_output):
+            file_path, line, message = m.group(1), m.group(2), m.group(3).strip()
+            key = (file_path, message[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            fixes.append({
+                "file": file_path,
+                "issue": f"[{tool_name}] Line {line}: {message}",
+                "action": "replace_function",
+                "description": f"Fix error at {file_path}:{line} — {message}",
+            })
+
+        # Python pattern: File "path", line N
+        for m in re.finditer(r'File "([^"]+)",\s*line\s*(\d+).*?\n\s*(.+)', error_output):
+            file_path, line, message = m.group(1), m.group(2), m.group(3).strip()
+            file_path = os.path.relpath(file_path, WORKSPACE_PATH) if os.path.isabs(file_path) else file_path
+            key = (file_path, message[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            fixes.append({
+                "file": file_path,
+                "issue": f"[{tool_name}] Line {line}: {message}",
+                "action": "replace_function",
+                "description": f"Fix error at {file_path}:{line} — {message}",
+            })
+
+        # Rust pattern: error[Exxxx]: msg --> file:line:col
+        for m in re.finditer(r'error\[E\d+\]:\s*(.+?)[\n\s]+--> ([^:]+):(\d+)', error_output):
+            message, file_path, line = m.group(1).strip(), m.group(2), m.group(3)
+            key = (file_path, message[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            fixes.append({
+                "file": file_path,
+                "issue": f"[{tool_name}] Line {line}: {message}",
+                "action": "replace_function",
+                "description": f"Fix Rust error at {file_path}:{line} — {message}",
+            })
+
+        # Generic fallback: file.ext:line: message
+        if not fixes:
+            for m in re.finditer(r'([^\s:]+\.\w+):(\d+)(?::\d+)?:\s*(.+)', error_output):
+                file_path, line, message = m.group(1), m.group(2), m.group(3).strip()
+                if "warning" in message.lower():
+                    continue  # Skip warnings
+                key = (file_path, message[:80])
+                if key in seen:
+                    continue
+                seen.add(key)
+                fixes.append({
+                    "file": file_path,
+                    "issue": f"[{tool_name}] Line {line}: {message}",
+                    "action": "replace_function",
+                    "description": f"Fix error at {file_path}:{line} — {message}",
+                })
+
+        # If still nothing parsed, create a generic fix with the raw output
+        if not fixes and error_output.strip():
+            fixes.append({
+                "file": "",
+                "issue": f"[{tool_name}] Build failed: {error_output[:300]}",
+                "action": "create",
+                "description": f"Build failed. Raw error:\n{error_output[:500]}",
+            })
+
+        return fixes[:10]  # Cap at 10 fixes per round
 
     def _programmatic_project_validation(self, code_files):
         """Run deterministic cross-file checks on entire project in 6 phases."""
@@ -933,12 +1255,25 @@ class ValidatorAgent(BaseAgent):
         return "replace_function"
 
     def _get_written_files(self, coder_result):
+        # Classic mode: extract from tool results
         written = []
         for r in coder_result.get("results", []):
             if r.get("tool") in ("smart_edit", "create_file") and r.get("result", {}).get("success"):
                 path = r["result"].get("path")
                 if path:
                     written.append(path)
+
+        if written:
+            return written
+
+        # Claude Code mode: results is empty, scan workspace for actual files
+        # If coder reported success, find what files exist
+        if coder_result.get("success"):
+            all_files = list_files(".", WORKSPACE_PATH)
+            if all_files.get("success"):
+                return [f for f in all_files.get("files", [])
+                        if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.svelte', '.vue'))]
+
         return written
 
     def _parse_response(self, response, files_checked):

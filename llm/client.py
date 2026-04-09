@@ -1,5 +1,14 @@
 import requests, os, json, traceback
 
+
+def _short(text, max_len=200):
+    """Truncate text for debug logging."""
+    if not text:
+        return ""
+    s = str(text)
+    return s[:max_len] + "..." if len(s) > max_len else s
+
+
 PROVIDERS = {
     "ollama": {
         "host": "http://localhost:11434",

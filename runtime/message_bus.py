@@ -13,16 +13,16 @@ class MessageBus:
     def publish(self, message, metadata=None):
         msg = copy.deepcopy(message)
 
-        if metadata:
+        if isinstance(msg, dict) and metadata:
             msg["metadata"] = metadata
         self.messages.append(msg)
 
         if self._event_bus:
             from core.events import EventType
-            self._event_bus.publish(EventType.MESSAGE_PUBLISHED, {
-                "agent": msg.get("agent"),
-                "role": msg.get("role"),
-            })
+            data = {}
+            if isinstance(msg, dict):
+                data = {"agent": msg.get("agent"), "role": msg.get("role")}
+            self._event_bus.publish(EventType.MESSAGE_PUBLISHED, data)
 
     def history(self):
         return self.messages

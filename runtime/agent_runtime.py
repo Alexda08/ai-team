@@ -2,6 +2,7 @@ from common.utils import Utils
 from runtime.runtime_helper import RuntimeHelper
 from runtime.message_bus import MessageBus
 from core.events import EventBus, EventType
+from core.loop_guard import LoopGuard, LoopGuardConfig
 import json
 
 class AgentRuntime:
@@ -12,6 +13,22 @@ class AgentRuntime:
         self.message_bus = MessageBus(event_bus=self.event_bus)
         self.workspace_context_bus = MessageBus(event_bus=self.event_bus)
         self.max_turns = max_turns if config is None else config.runtime.max_turns
+
+        # LoopGuard — always active
+        self.loop_guard = LoopGuard(LoopGuardConfig(
+            max_identical_calls=3,
+            ping_pong_window=6,
+            max_context_messages=self.max_turns * 3,
+        ))
+
+        # TraceCollector — only if config enables it
+        self.trace_store = None
+        self.trace_collector = None
+        if config and config.traces.enabled:
+            from core.traces import TraceStore, TraceCollector
+            self.trace_store = TraceStore(config.traces.db_path)
+            self.trace_collector = TraceCollector(self.event_bus, self.trace_store)
+
         self.state = {
             "phase": "ideation",
             "ideation": RuntimeHelper.get_ideation(),
@@ -42,6 +59,14 @@ class AgentRuntime:
 
             print("\n--------------------------------------------------")
             print(f"{thinker.name}: {t_resp['content']}")
+
+            # LoopGuard: check if Thinker is repeating itself
+            verdict = self.loop_guard.check_agent_turn("Thinker", t_resp.get("content", ""))
+            if verdict.blocked:
+                Utils.console_print(f"\n[LOOP GUARD] {verdict.reason}", "red", bold=True)
+                self.state["phase"] = "failed"
+                self._emit_phase(EventType.PHASE_END, "ideation", status="loop_detected")
+                return
 
             # CRITIC
             c_resp = critic.run(self.message_bus.history())
@@ -83,6 +108,12 @@ class AgentRuntime:
 
         review = architect.review_plan(plan)
         while review["status"] != "VIABLE" and turn < self.max_turns and turn >= 1:
+            # LoopGuard: check if plan is repeating
+            verdict = self.loop_guard.check_agent_turn("Thinker_plan", plan[:500])
+            if verdict.blocked:
+                Utils.console_print(f"\n[LOOP GUARD] {verdict.reason}", "red", bold=True)
+                break
+
             plan = thinker.generate_plan(plan, feedback=review)
             review = architect.review_plan(plan)
             print(f"  [REWORK] Round {review["status"]} | Unclear: {review['criteria']['required']}")
@@ -167,6 +198,9 @@ class AgentRuntime:
                 self.workspace_context_bus.publish("Task: "+ str(task["id"])+"->"+ task["description"] + " already completed")
                 continue
 
+            # Reset loop guard per task
+            self.loop_guard.reset()
+
             self.event_bus.publish(EventType.TASK_START, {"task_id": task["id"], "title": task.get("title", "")})
 
             result = executor.run_task(task, self.workspace_context_bus, self.state["completed_tasks"], validator)
@@ -197,6 +231,10 @@ class AgentRuntime:
 
     # Main runtime loop ----------------------------------------------------------------------------------
     def run(self, user_prompt):
+        # Start trace if enabled
+        if self.trace_collector:
+            self.trace_collector.start_trace(query=user_prompt[:500])
+
         self.message_bus.publish({
             "role": "user",
             "content": user_prompt
@@ -216,3 +254,26 @@ class AgentRuntime:
             print("\nRuntime failed.\n")
         elif self.state["phase"] == "done":
             print("\nRuntime completed.\n")
+
+        # End trace
+        if self.trace_collector:
+            outcome = "success" if self.state["phase"] == "done" else "failure"
+            trace = self.trace_collector.end_trace(status=self.state["phase"], outcome=outcome)
+            if trace:
+                print(f"  [TRACE] Saved trace {trace.trace_id} ({len(trace.steps)} steps)")
+
+        # Learning cycle post-run
+        if (self.state["phase"] == "done"
+                and self.config and self.config.learning.enabled
+                and self.trace_store):
+            try:
+                from core.learning import LearningOrchestrator
+                orch = LearningOrchestrator(
+                    self.trace_store,
+                    config_dir=self.config.learning.config_dir,
+                    min_quality=self.config.learning.min_quality,
+                )
+                report = orch.run_learning_cycle()
+                print(f"  [LEARNING] {report['status']}: {report['sft_pairs']} pairs, {len(report['configs_updated'])} configs updated")
+            except Exception as e:
+                print(f"  [LEARNING] Error: {e}")

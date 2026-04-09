@@ -365,4 +365,154 @@ class LearningOrchestrator:
             } for p in sft_pairs], f, indent=2)
 
         report["sft_pairs_path"] = pairs_path
+
+        # Step 5: Save routing recommendations for next run
+        if routing:
+            routing_path = os.path.join(self._evolver._config_dir, "routing.json")
+            with open(routing_path, "w") as f:
+                json.dump(routing, f, indent=2)
+            report["routing_path"] = routing_path
+
         return report
+
+
+# ═══════════════════════════════════════════════
+# EXECUTION HISTORY — closed learning loop
+# ═══════════════════════════════════════════════
+
+HISTORY_PATH = "agent_configs/execution_history.json"
+
+
+@dataclass
+class ExecutionRecord:
+    """Record of a single task execution for learning."""
+    task_id: str
+    task_description: str
+    assigned_model: str
+    final_model: str       # model that actually succeeded (after escalation)
+    retries: int
+    escalations: int
+    success: bool
+    duration_ms: float = 0
+    timestamp: float = field(default_factory=time.time)
+
+
+class ExecutionHistory:
+    """Persist execution records and compute model tier recommendations."""
+
+    def __init__(self, path: str = HISTORY_PATH):
+        self._path = path
+        self._records: List[Dict] = []
+        self._load()
+
+    def _load(self):
+        if os.path.isfile(self._path):
+            try:
+                with open(self._path, "r") as f:
+                    self._records = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._records = []
+
+    def _save(self):
+        os.makedirs(os.path.dirname(self._path), exist_ok=True)
+        with open(self._path, "w") as f:
+            json.dump(self._records, f, indent=2)
+
+    def add(self, record: ExecutionRecord):
+        self._records.append({
+            "task_id": record.task_id,
+            "task_description": record.task_description[:300],
+            "assigned_model": record.assigned_model,
+            "final_model": record.final_model,
+            "retries": record.retries,
+            "escalations": record.escalations,
+            "success": record.success,
+            "duration_ms": record.duration_ms,
+            "timestamp": record.timestamp,
+        })
+        # Keep last 500 records
+        if len(self._records) > 500:
+            self._records = self._records[-500:]
+        self._save()
+
+    def get_model_recommendations(self) -> Dict[str, str]:
+        """Analyze history and return recommended starting tier per task pattern.
+
+        If a task pattern consistently needs escalation (e.g. medium -> heavy),
+        recommend starting at the tier that actually works.
+
+        Returns: {"pattern_keyword": "recommended_tier"}
+        """
+        if len(self._records) < 3:
+            return {}
+
+        # Group by keywords in task description
+        pattern_stats: Dict[str, Dict[str, int]] = {}
+
+        for rec in self._records:
+            if not rec.get("success"):
+                continue
+
+            # Extract key patterns from description
+            desc = rec.get("task_description", "").lower()
+            keywords = set()
+            for kw in ("api", "route", "handler", "component", "store", "style",
+                        "config", "type", "model", "schema", "test", "util",
+                        "layout", "page", "server", "client", "database",
+                        "validation", "auth", "middleware"):
+                if kw in desc:
+                    keywords.add(kw)
+
+            final_model = rec.get("final_model", "medium")
+            for kw in keywords:
+                if kw not in pattern_stats:
+                    pattern_stats[kw] = {}
+                pattern_stats[kw][final_model] = pattern_stats[kw].get(final_model, 0) + 1
+
+        # For each pattern, pick the model that succeeds most often
+        recommendations = {}
+        tier_order = {"light": 0, "medium": 1, "heavy": 2, "ultra": 3}
+
+        for pattern, model_counts in pattern_stats.items():
+            if sum(model_counts.values()) < 2:
+                continue  # Not enough data
+
+            # Find the most common successful model
+            best_model = max(model_counts, key=model_counts.get)
+            total = sum(model_counts.values())
+            ratio = model_counts[best_model] / total
+
+            # Only recommend upgrade if >60% of successes needed that tier
+            if ratio > 0.6 and tier_order.get(best_model, 1) > 0:
+                recommendations[pattern] = best_model
+
+        return recommendations
+
+    def suggest_model_for_task(self, task: Dict, default: str = "medium") -> str:
+        """Suggest the best model tier for a specific task based on history."""
+        recommendations = self.get_model_recommendations()
+        if not recommendations:
+            return default
+
+        desc = task.get("description", "").lower()
+        best_tier = default
+        best_order = {"light": 0, "medium": 1, "heavy": 2, "ultra": 3}
+
+        for pattern, rec_tier in recommendations.items():
+            if pattern in desc:
+                # Use the highest recommended tier among matching patterns
+                if best_order.get(rec_tier, 1) > best_order.get(best_tier, 1):
+                    best_tier = rec_tier
+
+        return best_tier
+
+    @property
+    def total_records(self) -> int:
+        return len(self._records)
+
+    @property
+    def success_rate(self) -> float:
+        if not self._records:
+            return 0.0
+        successes = sum(1 for r in self._records if r.get("success"))
+        return successes / len(self._records)
