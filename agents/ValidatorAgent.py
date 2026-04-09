@@ -2,6 +2,7 @@ import os, re, json
 from agents.base_agent import BaseAgent
 from common.tools import read_file, list_files, file_summary
 from common.utils import Utils
+from common.ts_parser import extract_exports, extract_imports, extract_declarations
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE_PATH = os.path.join(BASE_DIR, "workspace")
@@ -58,6 +59,12 @@ class ValidatorAgent(BaseAgent):
         if critical:
             issues_text = "; ".join(i["message"] for i in critical)
             return {"status": "FAILED", "issues": issues_text, "files_checked": written_files}
+
+        # For fix tasks, skip LLM validation — programmatic checks are enough,
+        # and validate_project will re-check everything after all fixes
+        task_id = task.get("id", "")
+        if str(task_id).startswith("fix."):
+            return {"status": "PASSED", "reason": "Fix task passed programmatic checks", "files_checked": written_files}
 
         # Phase 3: LLM validation (does the code match the task description?)
         file_contents = {}
@@ -168,6 +175,9 @@ class ValidatorAgent(BaseAgent):
                 if imported_names:
                     export_names = self._get_export_names(found_path)
                     for name in imported_names:
+                        # Skip type-only imports (TS)
+                        if name.startswith("type "):
+                            continue
                         if export_names and name not in export_names:
                             issues.append({"severity": "critical", "file": file_path,
                                            "message": f"{file_path}: imports '{name}' from '{imp['raw_path']}' but '{found_path}' exports {export_names}"})
@@ -175,57 +185,32 @@ class ValidatorAgent(BaseAgent):
         return issues
 
     def _extract_imports(self, content, file_path):
-        """Extract import statements and resolve to workspace paths."""
-        imports = []
+        """Extract import statements and resolve to workspace paths using ts_parser."""
+        raw_imports = extract_imports(content, file_path)
+        resolved_imports = []
 
-        if file_path.endswith(".py"):
-            for match in re.finditer(r'^from\s+([\w.]+)\s+import\s+(.+)$', content, re.MULTILINE):
-                module = match.group(1)
-                names = [n.strip().split(" as ")[0] for n in match.group(2).split(",")]
-                rel_path = module.replace(".", "/") + ".py"
-                imports.append({"raw_path": module, "resolved_path": rel_path, "names": names})
+        for imp in raw_imports:
+            raw_path = imp["raw_path"]
+            names = imp["names"]
+            is_type = imp.get("is_type", False)
 
-            for match in re.finditer(r'^import\s+([\w.]+)', content, re.MULTILINE):
-                module = match.group(1)
-                rel_path = module.replace(".", "/") + ".py"
-                imports.append({"raw_path": module, "resolved_path": rel_path, "names": []})
+            # Resolve path to workspace
+            resolved = self._resolve_path_or_alias(raw_path, file_path)
+            if resolved is None and file_path.endswith(".py"):
+                # Python module path
+                resolved = raw_path.replace(".", "/") + ".py"
 
-        elif file_path.endswith((".js", ".ts", ".tsx", ".jsx", ".svelte", ".vue")):
-            # require() destructured
-            for match in re.finditer(r"(?:const|let|var)\s+\{\s*([^}]+)\}\s*=\s*require\(['\"]([^'\"]+)['\"]\)", content):
-                names = [n.strip() for n in match.group(1).split(",")]
-                resolved = self._resolve_path_or_alias(match.group(2), file_path)
-                if resolved:
-                    imports.append({"raw_path": match.group(2), "resolved_path": resolved, "names": names})
+            # Mark type imports with prefix for cohesion phase to skip
+            if is_type:
+                names = [f"type {n}" for n in names]
 
-            # require() default
-            for match in re.finditer(r"(?:const|let|var)\s+(\w+)\s*=\s*require\(['\"]([^'\"]+)['\"]\)", content):
-                if "{" not in match.group(0):
-                    resolved = self._resolve_path_or_alias(match.group(2), file_path)
-                    if resolved:
-                        imports.append({"raw_path": match.group(2), "resolved_path": resolved, "names": [match.group(1)]})
+            resolved_imports.append({
+                "raw_path": raw_path,
+                "resolved_path": resolved,
+                "names": names
+            })
 
-            # import { X } from 'path'
-            for match in re.finditer(r"import\s+\{\s*([^}]+)\}\s+from\s+['\"]([^'\"]+)['\"]", content):
-                names = [n.strip() for n in match.group(1).split(",")]
-                resolved = self._resolve_path_or_alias(match.group(2), file_path)
-                if resolved:
-                    imports.append({"raw_path": match.group(2), "resolved_path": resolved, "names": names})
-
-            # import X from 'path'
-            for match in re.finditer(r"import\s+(\w+)\s+from\s+['\"]([^'\"]+)['\"]", content):
-                resolved = self._resolve_path_or_alias(match.group(2), file_path)
-                if resolved:
-                    imports.append({"raw_path": match.group(2), "resolved_path": resolved, "names": [match.group(1)]})
-
-            # import type { X } from 'path' — track for cohesion but mark as type
-            for match in re.finditer(r"import\s+type\s+\{\s*([^}]+)\}\s+from\s+['\"]([^'\"]+)['\"]", content):
-                names = [f"type {n.strip()}" for n in match.group(1).split(",")]
-                resolved = self._resolve_path_or_alias(match.group(2), file_path)
-                if resolved:
-                    imports.append({"raw_path": match.group(2), "resolved_path": resolved, "names": names})
-
-        return imports
+        return resolved_imports
 
     def _resolve_path_or_alias(self, raw_path, importing_file):
         """Resolve relative path or framework alias. Returns None for external packages."""
@@ -277,50 +262,11 @@ class ValidatorAgent(BaseAgent):
         return None
 
     def _get_export_names(self, file_path):
-        """Extract exported names from a file."""
+        """Extract exported names from a file using ts_parser."""
         result = read_file(file_path, WORKSPACE_PATH)
         if not result["success"]:
-            return None  # Can't check, skip
-        content = result["content"]
-        names = set()
-
-        # Python: defined at module level
-        if file_path.endswith(".py"):
-            summ = file_summary(file_path, WORKSPACE_PATH)
-            if summ.get("success"):
-                for cls in summ["summary"].get("classes", []):
-                    names.add(cls["name"])
-                for func in summ["summary"].get("functions", []):
-                    if not func.get("class"):  # Top-level functions only
-                        names.add(func["name"])
-
-        # JS: module.exports = { X, Y }
-        elif file_path.endswith((".js", ".ts", ".tsx", ".jsx", ".svelte", ".vue")):
-            # Named exports: module.exports = { A, B, C }
-            match = re.search(r"module\.exports\s*=\s*\{([^}]+)\}", content)
-            if match:
-                for name in match.group(1).split(","):
-                    clean = name.strip().split(":")[0].strip()
-                    if clean:
-                        names.add(clean)
-
-            # Default export: module.exports = ClassName
-            match = re.search(r"module\.exports\s*=\s*(\w+)\s*;?\s*$", content, re.MULTILINE)
-            if match:
-                names.add(match.group(1))
-
-            # ES6: export { X, Y }
-            for match in re.finditer(r"export\s+\{([^}]+)\}", content):
-                for name in match.group(1).split(","):
-                    clean = name.strip().split(" as ")[0].strip()
-                    if clean:
-                        names.add(clean)
-
-            # ES6: export class/function/const
-            for match in re.finditer(r"export\s+(?:default\s+)?(?:class|function|const|let|var)\s+(\w+)", content):
-                names.add(match.group(1))
-
-        return names if names else None
+            return None
+        return extract_exports(result["content"], file_path)
 
     def _get_dependency_context(self, written_files, task):
         """Get summaries of files that the written files depend on."""
@@ -733,30 +679,14 @@ class ValidatorAgent(BaseAgent):
         """TS interface fields vs store init; JSON type misuse."""
         fixes = []
 
-        # Extract interfaces
+        # Extract interfaces using ts_parser
         interfaces = {}
         for f, content in file_contents.items():
             if not f.endswith((".ts", ".tsx")):
                 continue
-            for m in re.finditer(r'(?:export\s+)?interface\s+(\w+)\s*\{([^}]+)\}', content, re.DOTALL):
-                name = m.group(1)
-                fields = set()
-                optional_fields = set()
-                for line in m.group(2).split("\n"):
-                    line = line.strip()
-                    if not line or line.startswith("//"):
-                        continue
-                    fm = re.match(r'(\w+)\s*(\?)\s*:', line)
-                    if fm:
-                        fields.add(fm.group(1))
-                        optional_fields.add(fm.group(1))
-                        continue
-                    fm = re.match(r'(\w+)\s*:', line)
-                    if fm:
-                        fields.add(fm.group(1))
-                if fields:
-                    interfaces[name] = {"all": fields, "optional": optional_fields,
-                                         "required": fields - optional_fields}
+            decls = extract_declarations(content, f)
+            for iface in decls.get("interfaces", []):
+                interfaces[iface["name"]] = iface["fields"]
 
         # Check store init vs interface
         for f, content in file_contents.items():
@@ -778,11 +708,21 @@ class ValidatorAgent(BaseAgent):
                 iface = interfaces[type_name]
                 extra = init_fields - iface["all"]
                 if extra:
+                    # Build the corrected init: keep only fields that exist in interface
+                    valid_fields = init_fields & iface["all"]
+                    corrected_init = ", ".join(f"{fld}: null" for fld in sorted(valid_fields))
+                    if not corrected_init:
+                        corrected_init = ", ".join(f"{fld}: null" for fld in sorted(iface["all"]))
                     fixes.append({
                         "file": f,
                         "issue": f"Type mismatch: writable<{type_name}> init has {sorted(extra)} not in {type_name} ({sorted(iface['all'])})",
-                        "action": "replace_function",
-                        "description": f"In {f}: store fields {sorted(extra)} not in interface {type_name}"
+                        "action": "create",
+                        "description": (
+                            f"In {f}: the writable<{type_name}> store is initialized with fields {sorted(extra)} "
+                            f"that do not exist in the {type_name} interface. "
+                            f"Replace the writable init object to only use fields from the interface: {sorted(iface['all'])}. "
+                            f"Use create_file to rewrite {f} with the corrected init: writable({{ {corrected_init} }})"
+                        )
                     })
                 missing_req = iface["required"] - init_fields
                 if missing_req:

@@ -53,6 +53,8 @@ def _find_function_bounds(lines, function_name):
         rf"(?:@\w+\s+)*(?:public|private|internal|open|static|override|\s)*func\s+{re.escape(function_name)}\s*\(",
         # Dart: type name(, Future<type> name(
         rf"(?:static\s+)?(?:\w+(?:<[^>]+>)?\s+)?{re.escape(function_name)}\s*\(",
+        # TS: interface/type/enum Name { (treat as replaceable block)
+        rf"(?:export\s+)?(?:interface|type|enum)\s+{re.escape(function_name)}\b",
     ]
 
     # Exclusion prefixes — lines that look like function calls, not definitions
