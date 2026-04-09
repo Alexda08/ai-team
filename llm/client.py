@@ -25,6 +25,31 @@ class LLMClient:
         self.provider = provider
         self.config = PROVIDERS[provider]
 
+    @classmethod
+    def from_config(cls, llm_config, model_override=None):
+        """Create LLMClient from a LLMConfig dataclass.
+
+        Args:
+            llm_config: core.config.LLMConfig instance
+            model_override: optional model name (overrides llm_config.default_model)
+        """
+        provider = llm_config.provider
+        model = model_override or llm_config.default_model
+
+        # Apply custom host if provided
+        instance = cls(model=model, provider=provider)
+        if llm_config.host and provider in PROVIDERS:
+            instance.config = {**PROVIDERS[provider], "host": llm_config.host}
+        return instance
+
+    @classmethod
+    def model_map_from_config(cls, llm_config):
+        """Build the model_map dict (light/medium/heavy/ultra) from config."""
+        return {
+            tier: cls.from_config(llm_config, model_override=model_name)
+            for tier, model_name in llm_config.model_map.items()
+        }
+
     def generate(self, system: str, messages: list, json_schema: dict = None) -> str:
         try:
             if self.provider == "ollama":
