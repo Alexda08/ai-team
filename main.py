@@ -1,3 +1,5 @@
+import sys
+
 from llm.client import LLMClient
 from agents.base_agent import BaseAgent
 from agents.ThinkerAgent import ThinkerAgent
@@ -8,10 +10,21 @@ from agents.ValidatorAgent import ValidatorAgent
 from agents.ArchitectAgent import ArchitectAgent
 from runtime.agent_runtime import AgentRuntime
 from common.utils import Utils
+from core.config import load_config
+
 
 def main():
-    # LLM
-    llm = LLMClient(model="minimax-m2.7:cloud", provider="ollama")
+    # Load config (from --config arg, DEVTEAM_CONFIG env, ./config.toml, or defaults)
+    config_path = None
+    if "--config" in sys.argv:
+        idx = sys.argv.index("--config")
+        if idx + 1 < len(sys.argv):
+            config_path = sys.argv[idx + 1]
+
+    config = load_config(config_path)
+
+    # LLM (from config)
+    llm = LLMClient.from_config(config.llm)
 
     # Prompts
     success, prompts = Utils.load_prompts()
@@ -19,26 +32,22 @@ def main():
         print(prompts)
         return
 
-    # Agents
-    model_map = {
-        "light": LLMClient(model="minimax-m2.7:cloud", provider="ollama"),
-        "medium": LLMClient(model="qwen3.5:cloud", provider="ollama"),
-        "heavy": LLMClient(model="qwen3-coder-next:cloud", provider="ollama"),
-        "ultra": LLMClient(model="qwen3-coder:480b-cloud", provider="ollama"),
-    }
+    # Model map (from config)
+    model_map = LLMClient.model_map_from_config(config.llm)
 
+    # Agents
     init_agents = {
         "Thinker": ThinkerAgent(
             name="Thinker",
             system_prompt=prompts["thinker_prompt"],
             llm=llm
         ),
-        "Critic":BaseAgent(
+        "Critic": BaseAgent(
             name="Critic",
             system_prompt=prompts["critic_prompt"],
             llm=llm
         ),
-        "Tasker":TaskerAgent(
+        "Tasker": TaskerAgent(
             name="Tasker",
             system_prompt=prompts["tasker_prompt"],
             llm=llm
@@ -62,7 +71,7 @@ def main():
         )
     }
 
-    # Prompt inicial
+    # User prompt
     success, content = Utils.load_text("user_prompt.txt", "./")
 
     if not success:
@@ -72,7 +81,7 @@ def main():
     Utils.console_print("Welcome to the AI Dev Team!\n", "White", bold=True)
 
     # Mode selection
-    mode = Utils.select_menu(options = {
+    mode = Utils.select_menu(options={
         "ideation": "Full pipeline (Thinker → Tasker → Execution)",
         "planning": "Start from Planning",
         "tasking": "Start from Tasking",
@@ -85,7 +94,7 @@ def main():
         return
 
     # Runtime
-    runtime = AgentRuntime(agents=init_agents)
+    runtime = AgentRuntime(agents=init_agents, config=config)
     runtime.state["phase"] = mode
     runtime.run(content)
 
