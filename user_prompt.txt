@@ -1,4 +1,14 @@
-quiero una app que me ayude a registar todo lo que estoy haciendo en cada momento mientras trabajo, para luego imputarlo manualmente a la app de la empresa, tiene que ser extremadamente sencillo de usar, y que sea capaz de guardar todo el trabajo que se haga en cada momento, es decir, que guarde todo lo que se haga en cada momento, y luego puedas verlo todo junto con el tiempo, el nombre del proyecto, la hora de inicio y fin, el nombre de la persona que hizo el trabajo, etc.
+Quiero una API REST en Node.js con TypeScript puro (sin framework, solo http nativo + ts-node).
 
-la app quiero que sea solo en web, que tenga persistencia, solo tiene que ser personal, no corporativa.
-quiero que esta hecha en framework pequeño i todo en el mismo, no quiero cosas desacopladas.
+3 endpoints:
+- GET /tasks — lista todas las tareas (array en memoria)
+- POST /tasks — crea una tarea con { title, priority: "low"|"medium"|"high", dueDate }
+- DELETE /tasks/:id — elimina por id
+
+Requisitos:
+- Un archivo de tipos compartido (Task, Priority, ApiResponse)
+- Un servicio con la lógica de negocio separada del router
+- Validación: title obligatorio, priority debe ser uno de los 3 valores, dueDate debe ser fecha futura
+- El router debe usar pattern matching con regex para las rutas
+- Respuestas siempre en formato { success: boolean, data?: T, error?: string }
+- IDs generados con crypto.randomUUID()
